@@ -1,3 +1,4 @@
+import { HealthModule } from '../platform/health/health.module.js';
 import { Module } from '@nestjs/common';
 import type { DynamicModule } from '@nestjs/common';
 import { WorkerLifetime } from './worker-lifetime.js';
@@ -10,6 +11,6 @@ import { SqsModule } from '../platform/messaging/sqs/sqs.module.js';
 @Module({ providers: [WorkerLifetime] })
 export class WorkerModule {
   static register(logger: JsonLogger, config: ConfigurationByRole['worker']): DynamicModule {
-    return { module: WorkerModule, imports: [LoggingModule.register(logger), DatabaseModule.register(config), SqsModule.register(config.sqs)] };
+    return { module: WorkerModule, imports: [LoggingModule.register(logger), DatabaseModule.register(config), SqsModule.register(config.sqs), HealthModule.register(config, logger)] };
   }
 }

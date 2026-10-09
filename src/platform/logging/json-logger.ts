@@ -5,9 +5,10 @@ import { requestContext } from './request-context.js';
 import { ProvisionConflict } from '../messaging/sqs/provision-conflict.js';
 
 type Level = 'info' | 'warn' | 'error' | 'debug' | 'fatal';
-type Event = 'process.starting' | 'process.started' | 'process.stopping' | 'process.stopped' |
-  'bootstrap.failed' | 'migration.failed' | 'provision.completed' | 'provision.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
+type Event = 'process.draining' | 'process.starting' | 'process.started' | 'process.stopping' | 'process.stopped' |
+  'health.degraded' | 'shutdown.failed' | 'bootstrap.failed' | 'migration.failed' | 'provision.completed' | 'provision.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
 interface Details {
+  checks?: { postgresql: 'up' | 'down'; sqs: 'up' | 'down' };
   port?: number;
   runtime?: string;
   method?: string;
@@ -40,6 +41,10 @@ export class JsonLogger implements LoggerService {
     if (details.runtime && /^bun:\d+\.\d+\.\d+$/.test(details.runtime)) record.runtime = details.runtime;
     if (details.method && ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(details.method)) record.method = details.method;
     if (details.signal && ['SIGINT', 'SIGTERM'].includes(details.signal)) record.signal = details.signal;
+    if (details.checks) record.checks = {
+      postgresql: details.checks.postgresql === 'up' ? 'up' : 'down',
+      sqs: details.checks.sqs === 'up' ? 'up' : 'down',
+    };
     if (details.error !== undefined) {
       record.errorType = details.error instanceof ConfigurationError ? 'ConfigurationError' : 'Error';
       if (details.error instanceof ConfigurationError) record.variables = details.error.variables;

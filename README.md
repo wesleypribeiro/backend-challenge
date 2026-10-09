@@ -744,3 +744,75 @@ wallet.balance == saldo reconstruído pelo ledger
 ### Diferenciais opcionais
 
 Teste de carga também conta como diferencial. Se fizer, exponha como `bun run test:load` e registre ambiente, metodologia, throughput, p50/p95/p99, taxa de erro, conflitos de concorrência e outbox lag. Não há meta de RPS — a qualidade do experimento e a honestidade da análise pesam mais que o número bruto.
+
+---
+
+## Operação da implementação — fundação P0
+
+O enunciado acima está preservado integralmente. A implementação atual é a fundação técnica da change `bootstrap-backend-foundation`: **não processa dinheiro ou apostas**. P0 permite iniciar o domínio em outra change; P1 e todos os testes financeiros da seção 13 permanecem pendentes. A change continua aberta. Decisões, limites e continuidade: [ARCHITECTURE.md](ARCHITECTURE.md). Evidências por lote: [implementation-notes.md](openspec/changes/bootstrap-backend-foundation/implementation-notes.md).
+
+### Requisitos e setup
+
+Bun **1.4.2**, Docker Engine e Compose **≥2.24.4**. PostgreSQL 17.10 e LocalStack Community 4.14.0 estão fixados por digest; essa versão do LocalStack executa SQS sem conta/token. Não inserir credenciais reais. Detalhes e limitações da versão: [docker/README.md](docker/README.md).
+
+```bash
+bun install --frozen-lockfile
+cp .env.example .env
+bun run typecheck
+bun run build
+docker compose config --quiet
+docker compose up --build -d --scale worker=3 --wait --wait-timeout 120
+curl -i http://localhost:3000/health/live
+curl -i http://localhost:3000/health/ready
+docker compose exec -T --index 1 worker bun run health:worker
+```
+
+Se o contexto Docker selecionado não tiver daemon, fornecer um contexto funcional por comando, por exemplo `DOCKER_CONTEXT=default docker compose ...` e `DOCKER_CONTEXT=default bun run test:infra --scope=p0`. Não é necessário mudar o contexto global.
+
+O Compose sobe PostgreSQL/LocalStack e espera seus healthchecks reais. Executa `migrate` e `provision` uma vez; API/worker só iniciam após ambos terminarem com sucesso. Os processos usam JavaScript compilado na mesma imagem, Bun como PID 1, usuário sem root e nenhum bind mount de fontes. Não há migrations ou provisionamento no startup da API/worker. O worker não expõe HTTP, não recebe nem confirma mensagens. `--scale worker=3` cria processos independentes sem portas públicas em conflito.
+
+Portas locais padrão: API 3000, PostgreSQL 5432, LocalStack 4566, somente em loopback. Alterar `API_PORT`, `POSTGRES_PORT` e `LOCALSTACK_PORT` se necessário. Dentro do Compose, os destinos são `postgres:5432` e `http://localstack:4566`; no host, configurar as portas publicadas no `.env`. URLs/ARNs das filas são descobertos pelo SDK. Nenhum perfil permite fallback para AWS real.
+
+O `.env.example` contém apenas valores fictícios. O `.env` está ignorado pelo Git e excluído da imagem. API/worker recebem `DATABASE_URL` de `wagering_app`; o job `migrate` recebe exclusivamente `MIGRATION_DATABASE_URL` de `wagering_migrator`; `provision` recebe configuração SQS sem credencial PostgreSQL. Overrides das senhas de bootstrap devem ficar em env-file local da infraestrutura, separado do ambiente da aplicação. Em URLs, percent-encode caracteres reservados das credenciais. Mudanças nas variáveis de bootstrap não rotacionam automaticamente senhas de um volume já inicializado.
+
+### Comandos operacionais
+
+| Comando | Uso |
+|---|---|
+| `bun run start:api` / `bun run start:worker` | Executar `dist/` no host após build e configuração local; dependências devem estar preparadas. |
+| `bun run db:migrate` / `db:status` / `db:rollback` | Runner compilado com ambiente exclusivo de migrator; rollback de uma migration por comando. |
+| `bun run infra:provision` | Provisionar/verificar FIFO e DLQ, sem apagar recursos ou mensagens. Drift existente falha; reconciliação fica em P1. |
+| `bun run health:worker` | JSON com checks PostgreSQL/SQS; exit 0 saudável, 1 degradado/configuração inválida; sem HTTP ou consumo. |
+| `docker compose logs api worker migrate provision` | Diagnóstico JSON de lifecycle, erros e preparação; sem payloads/credenciais. |
+| `docker compose stop api worker` | Draining e shutdown normal em até 25 s; grace period de 30 s. |
+| `docker compose down` | Parar/remover containers mantendo volume PostgreSQL; a recriação do LocalStack pode perder filas/mensagens locais. |
+
+Para consultar o histórico dentro da rede e usando só a credencial migrator:
+
+```bash
+docker compose run --rm --no-deps migrate dist/bootstrap/migrate.js status
+```
+
+Executar somente **um migrator por vez** até P1 6.1. `db:status` é administrativo e pode preparar o histórico em banco novo; readiness usa somente SELECT. A migration técnica cria apenas o schema vazio `wagering` e permissões. Seu `down` usa `RESTRICT`, nunca `CASCADE`. Testes de rollback usam bancos descartáveis; não testar reversões no desenvolvimento. Não usar `down --volumes` para diagnosticar uma falha de startup. Corrigir o job/configuração e repetir a preparação preservando dados.
+
+### Health e observabilidade
+
+- `GET /health/live`: público, `200 {"status":"ok"}`, independente de PostgreSQL/SQS.
+- `GET /health/ready`: público, 200 apenas se PostgreSQL, histórico esperado e ambas as filas com atributos/policies corretos estiverem prontos. Caso contrário, 503 com `{"status":"error","checks":{"postgresql":"up|down","sqs":"up|down"}}`; cada valor real é `up` ou `down`.
+- HTTP/CLI compartilham checks paralelos e canceláveis. O I/O tem prazo de 1700 ms, reservando margem dentro do orçamento total de 2 s. SQL usa sessão read-only e conexão dedicada; SQS não faz retries no probe. Cada chamada reavalia dependências e recupera sem restart.
+- Probes nunca criam objetos, aplicam migrations ou enviam/recebem/excluem mensagens. Em draining, readiness usa 503 e `reason: "shutting_down"` enquanto puder responder. O probe worker verifica dependências, não progresso de jobs; o container observa a vida do processo principal.
+- Logs JSON propagam/geram `x-correlation-id`. IDs e métricas financeiras serão acrescentados nas changes financeiras, sem registrar payload completo ou segredos.
+
+### Testes e aceite parcial
+
+```bash
+bun run test:unit
+DOCKER_CONTEXT=default bun run test:integration
+DOCKER_CONTEXT=default bun run test:smoke
+DOCKER_CONTEXT=default bun run test:infra --scope=p0
+openspec validate bootstrap-backend-foundation --type change --strict --no-interactive
+```
+
+`test:unit` cobre unidades e runtime compilado sem exigir serviços externos (inclui a suite histórica `tests/smoke/`). `test:integration` exercita PostgreSQL/LocalStack reais. `test:smoke` executa `tests/docker/`, incluindo a imagem final, migrations, transporte e Compose com três workers; `test:docker` mantém o mesmo acesso direto. `bun test` preserva a suite histórica. `test:infra --scope=p0` executa typecheck, build e todas essas suites sequencialmente; cada harness prepara/limpa seus próprios containers, rede, volume, database e filas. Não executar suites simultâneas compartilhando `dist/` e `.test-dist/`.
+
+Docker ausente ou teste falhando reprova a execução, sem mocks substitutivos ou skip silencioso. Sem `--scope=p0`, `test:infra` exige P0+P1: atualmente retorna **1/incomplete**, listando P1 ausente, em vez de declarar conformidade completa. A implantação de P1 completará seu manifesto de suites. Nenhum teste atual comprova invariantes financeiras, inbox/outbox, idempotência persistente ou saldo versus ledger; a matriz obrigatória continua no [design](openspec/changes/bootstrap-backend-foundation/design.md#planejamento-futuro-e-rastreabilidade-dos-testes-financeiros--readme-13).

@@ -4,7 +4,7 @@ P0 libera o início do domínio financeiro após evidências reais; P1 completa 
 
 O checklist registra somente tarefas com evidências de implementação. Manter a change aberta após este lote e após P0 enquanto houver pendências P1. As decisões D1–D10 e a matriz S13/F1–F7 em `design.md` continuam sendo referência.
 
-Evidências dos cinco lotes em [implementation-notes.md](implementation-notes.md). O lote 4.1–4.3 acrescenta cliente SQS local, provisionador compilado de FIFO/DLQ, preservação de recursos/mensagens na reexecução e transporte técnico real pelo host e imagem Docker. Health, composição completa e demais tarefas P0/P1 continuam pendentes. A recusa de `down` com objetos adicionais foi antecipada no lote anterior por solicitação explícita; 6.2 permanece pendente para completar a prova de falha após DDL.
+Evidências dos seis lotes em [implementation-notes.md](implementation-notes.md). P0 1.1–5.4 está concluído: **21/34 tarefas**, com build/DI compilados, PostgreSQL/migrations, SQS, health HTTP/worker cancelável, Compose integrado, três workers sem consumo financeiro e shutdown normal comprovados em containers reais. As **13 tarefas P1 permanecem pendentes** e a change continua aberta. O cenário básico de pausa/retorno e a escala 3 deste P0 não encerram a matriz adversarial/restarts de 8.x. A recusa de `down` com objetos adicionais foi antecipada no lote 3.1–3.4 por solicitação explícita; 6.2 permanece pendente para completar a prova de falha após DDL.
 
 ## 1. P0 — Build compilado e processos sob Bun
 
@@ -37,10 +37,10 @@ Evidências dos cinco lotes em [implementation-notes.md](implementation-notes.md
 
 ## 5. P0 — Health, execução integrada e aceite do marco
 
-- [ ] 5.1 Implementar `/health/live` e `/health/ready` públicos, com checks read-only de PostgreSQL/migrations e SQS/filas e orçamento de 2 s; verificar respostas 200/503, dependência indisponível/fila ausente, liveness independente e nenhum efeito em banco/fila. Referência: `health-checks`, D9.
-- [ ] 5.2 Criar `health:worker` com as mesmas verificações sem HTTP público; verificar JSON e exit code 0/1 em cenários saudável/degradado, sem consumir mensagens ou alegar progresso de jobs. Referência: `health-checks`.
-- [ ] 5.3 Completar Compose com jobs one-shot e processos condicionados ao sucesso da preparação, além de shutdown normal `SIGTERM`/`SIGINT` de 25 s e grace period 30 s; verificar startup completo, ausência de migration/provisionamento pela API/worker e liberação de recursos ao encerrar. Referência: `local-infrastructure`, `backend-runtime`.
-- [ ] 5.4 Fechar P0 com `test:unit`, `test:integration`, `test:smoke` e `test:infra --scope=p0`: executar typecheck/build e suites reais, comprovar decorators/DI/imports/rotas HTTP e probe da imagem final, repetir migrations compiladas contra PostgreSQL real e registrar evidências. Acrescentar setup mínimo ao README sem alterar o enunciado e criar `ARCHITECTURE.md` com D1–D10, camadas, riscos e pendências P1/S13; verificar comandos reproduzíveis e relatório explicitamente parcial. Referência: todas as capabilities.
+- [x] 5.1 Implementar `/health/live` e `/health/ready` públicos, com checks read-only de PostgreSQL/migrations e SQS/filas e orçamento de 2 s; verificar respostas 200/503, dependência indisponível/fila ausente, liveness independente e nenhum efeito em banco/fila. Referência: `health-checks`, D9.
+- [x] 5.2 Criar `health:worker` com as mesmas verificações sem HTTP público; verificar JSON e exit code 0/1 em cenários saudável/degradado, sem consumir mensagens ou alegar progresso de jobs. Referência: `health-checks`.
+- [x] 5.3 Completar Compose com jobs one-shot e processos condicionados ao sucesso da preparação, além de shutdown normal `SIGTERM`/`SIGINT` de 25 s e grace period 30 s; verificar startup completo, ausência de migration/provisionamento pela API/worker e liberação de recursos ao encerrar. Referência: `local-infrastructure`, `backend-runtime`.
+- [x] 5.4 Fechar P0 com `test:unit`, `test:integration`, `test:smoke` e `test:infra --scope=p0`: executar typecheck/build e suites reais, comprovar decorators/DI/imports/rotas HTTP e probe da imagem final, repetir migrations compiladas contra PostgreSQL real e registrar evidências. Acrescentar setup mínimo ao README sem alterar o enunciado e criar `ARCHITECTURE.md` com D1–D10, camadas, riscos e pendências P1/S13; verificar comandos reproduzíveis e relatório explicitamente parcial. Referência: todas as capabilities.
 
 ## 6. P1 — Robustez de migrations e persistência
 

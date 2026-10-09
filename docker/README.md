@@ -1,13 +1,13 @@
-# Infraestrutura local — P0 2.3–4.3
+# Infraestrutura local — P0 1.1–5.4
 
-O Compose disponibiliza PostgreSQL e SQS via LocalStack. API, workers, jobs de migrations e provisionamento das filas ainda não fazem parte do Compose. A aplicação integra MikroORM e SQS, com comandos separados de migration e provisionamento. Não há processamento financeiro nem schema `wagering` criado pelo bootstrap do container; esse schema pertence à migration técnica.
+O Compose disponibiliza PostgreSQL, SQS via LocalStack, jobs one-shot `migrate`/`provision` e processos independentes `api`/`worker`. Jobs esperam serviços saudáveis; os processos aguardam os dois jobs terminarem com sucesso. A aplicação integra MikroORM e SQS, com comandos administrativos separados. Não há processamento financeiro nem schema `wagering` criado pelo bootstrap do container; esse schema pertence à migration técnica.
 
 ## Pré-requisitos e imagens
 
 - Bun 1.4.2, Docker Engine funcional e Docker Compose **2.24.4 ou superior** (`!override` é usado para substituir portas nos testes). Validação realizada com Engine 29.8.1, Compose 2.40.3, Linux amd64; outras plataformas ainda não foram executadas.
 - PostgreSQL `17.10-bookworm` e LocalStack Community `4.14.0`, ambos fixados por digest em `compose.yaml`.
 - Downloads das imagens exigem acesso ao registry. PostgreSQL usa volume nomeado; LocalStack não recebe Docker socket nem volume de persistência neste lote.
-- Portas de desenvolvimento publicadas somente em loopback: PostgreSQL `5432` e LocalStack `4566`. Alterar `POSTGRES_PORT` / `LOCALSTACK_PORT` em caso de conflito e ajustar os endpoints usados no host.
+- Portas de desenvolvimento publicadas somente em loopback: API `3000`, PostgreSQL `5432` e LocalStack `4566`. Alterar `POSTGRES_PORT` / `LOCALSTACK_PORT` em caso de conflito e ajustar os endpoints usados no host.
 
 LocalStack Community 4.14.0 executou SQS **sem conta ou `LOCALSTACK_AUTH_TOKEN`** nos testes. A escolha mantém esta reprodução local independente de ativação. É uma versão antiga: não incorpora novas correções nem melhorias de paridade AWS. Versões atuais unificadas exigem conta/token; atualizar exige rever esses pré-requisitos e repetir os testes, sem substituir o emulador silenciosamente. A alternativa de fixar uma versão antiga e seus limites está documentada pelo [LocalStack](https://blog.localstack.cloud/localstack-single-image-next-steps/). Não inserir tokens em arquivos versionados, argumentos de comandos ou logs; uma eventual atualização deve exigir o token explicitamente e falhar com diagnóstico se ausente.
 
@@ -15,7 +15,7 @@ LocalStack Community 4.14.0 executou SQS **sem conta ou `LOCALSTACK_AUTH_TOKEN`*
 
 ```bash
 docker compose config --quiet
-docker compose up -d --wait --wait-timeout 120
+docker compose up --build -d --scale worker=3 --wait --wait-timeout 120
 docker compose ps
 docker compose exec -T postgres sh -c 'PGPASSWORD="$WAGERING_APP_PASSWORD" psql -X -h 127.0.0.1 -U wagering_app -d "$APP_DATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT current_user, current_database()"'
 docker compose exec -T localstack awslocal sqs list-queues --region us-east-1
@@ -86,7 +86,7 @@ O comando roda `dist/bootstrap/provision.js` em processo próprio, sem exigir ba
 
 URLs são resolvidas com `GetQueueUrl` e ARNs com `GetQueueAttributes`. Não construir URLs/ARNs nem reutilizar uma URL do host como configuração de rede do container. API/worker recebem o cliente via NestJS, sem chamadas de rede no startup e sem provisionar, receber ou confirmar mensagens; o lifecycle fecha o cliente.
 
-O provisionador consulta e valida recursos existentes antes de escrever, cria a DLQ primeiro e então a principal. Ambas são FIFO, com dedup por conteúdo desabilitada, visibility 60 s e long poll 20 s. Retenção é 345600 s na principal e 1209600 s na DLQ. `RedrivePolicy` aponta ao ARN resolvido da DLQ com `maxReceiveCount=5`; após obter o ARN da principal, `RedriveAllowPolicy` da DLQ fica `byQueue`, restrita a essa fila. Essa última ligação também pode completar uma preparação anterior em que a policy ainda está ausente. Durante a criação inicial existe uma janela com a policy padrão do serviço; a preparação só retorna sucesso após verificar os atributos finais. A ordenação de startup em Compose será acrescentada em 5.3.
+O provisionador consulta e valida recursos existentes antes de escrever, cria a DLQ primeiro e então a principal. Ambas são FIFO, com dedup por conteúdo desabilitada, visibility 60 s e long poll 20 s. Retenção é 345600 s na principal e 1209600 s na DLQ. `RedrivePolicy` aponta ao ARN resolvido da DLQ com `maxReceiveCount=5`; após obter o ARN da principal, `RedriveAllowPolicy` da DLQ fica `byQueue`, restrita a essa fila. Essa última ligação também pode completar uma preparação anterior em que a policy ainda está ausente. Durante a criação inicial existe uma janela com a policy padrão do serviço; a preparação só retorna sucesso após verificar os atributos finais. A ordenação de startup em Compose impede API/worker de iniciar antes dessa verificação final.
 
 Uma nova execução compatível apenas lê/verifica os recursos; preserva filas, tags e mensagens. O sucesso registra `provision.completed`; falha retorna exit 1 e `provision.failed`. Incompatibilidade informa `SQS_QUEUE_CONFLICT`, `queueRole` e `attribute`, sem URLs, credenciais ou payload. Neste P0, divergências de atributos/policies existentes **falham sem reconciliação**. Não há DeleteQueue, PurgeQueue ou recriação automática. A reconciliação de drift fica em 7.1; redelivery/visibility e redrive efetivo até DLQ ficam em 7.2–7.3. FIFO não substitui idempotência persistente, inbox ou atomicidade financeira.
 
@@ -105,7 +105,7 @@ NODE_ENV=development MIGRATION_DATABASE_URL='postgresql://wagering_migrator:loca
 
 Para credenciais próprias, fornecer variáveis somente ao processo migrator ou usar env-file ignorado exclusivo. Não colocar a credencial no `.env` de API/worker. Os comandos não compilam implicitamente: executar o build após mudar migrations. Na imagem, `bun run db:status`, `bun run db:migrate` e `bun run db:rollback` usam os mesmos `.js`; fornecer o ambiente migrator ao container e conectar à rede do PostgreSQL, usando `postgres:5432`. Não montar fontes. Os testes automatizados mostram essa execução completa em `tests/docker/migrations.test.ts`.
 
-`db:status` retorna JSON com `executed`/`pending`; em database novo, o MikroORM prepara a tabela de histórico. Esse comando administrativo **não é** o futuro check read-only da readiness, que usará SELECT sob o papel app. `db:migrate` aplica pendências transacionalmente e sua repetição não reaplica passos concluídos. `db:rollback` desfaz **uma** migration por invocação; a migration inicial só remove o schema vazio, usando `RESTRICT`. Objetos adicionais fazem o comando falhar, preservando schema, objeto e histórico. O histórico `public.mikro_orm_migrations` e o SELECT de `wagering_app` permanecem após rollback. Erros retornam exit code 1 e diagnóstico JSON sem URL/senha.
+`db:status` retorna JSON com `executed`/`pending`; em database novo, o MikroORM prepara a tabela de histórico. Esse comando administrativo **não é** o check read-only da readiness, que usa SELECT sob o papel app. `db:migrate` aplica pendências transacionalmente e sua repetição não reaplica passos concluídos. `db:rollback` desfaz **uma** migration por invocação; a migration inicial só remove o schema vazio, usando `RESTRICT`. Objetos adicionais fazem o comando falhar, preservando schema, objeto e histórico. O histórico `public.mikro_orm_migrations` e o SELECT de `wagering_app` permanecem após rollback. Erros retornam exit code 1 e diagnóstico JSON sem URL/senha.
 
 O ciclo destrutivo `up → up → down → up` é automatizado apenas em databases descartáveis. Não executar a suite contra desenvolvimento nem reverter suas migrations para testar. Migrations financeiras futuras precisam de estratégia e testes próprios de preservação de dados. Esta migration não concede DML genérico sobre futuras tabelas.
 
@@ -118,3 +118,13 @@ Uma interrupção não capturável (`SIGKILL`, falha do daemon/host) pode impedi
 `.dockerignore` permite as fontes TypeScript sob `src/`, incluindo o runner e migrations, e os patches necessários à instalação. A imagem final contém somente `dist/`, dependências de produção e manifest. O script de bootstrap PostgreSQL é um bind mount read-only do Compose e não deve ser copiado à imagem da API/worker.
 
 Logs financeiros serão ampliados nas changes F1–F6, com eventos estruturados e `messageId`, `transactionId`, `walletId`, `providerId` quando existirem, preservando correlação e proteção contra payloads/segredos. Não criar IDs fictícios, métricas financeiras ou logging de negócio neste lote. A matriz S13 continua pendente.
+
+## Health, escala e encerramento
+
+API publica somente `/health/live` e `/health/ready`, sem autenticação. Worker não tem listener público; `docker compose exec -T --index 1 worker bun run health:worker` executa o probe compilado. Ambos os caminhos compartilham PostgreSQL read-only (SELECT + histórico/schema esperado) e validação de atributos/policies das duas filas SQS. Prazo externo de 2 s, com I/O limitado a 1700 ms, cancelamento real e sem retries SQS do probe. Recuperação não depende de restart.
+
+`docker compose up --build -d --scale worker=3` não publica portas de worker nem fixa `container_name`. SIGINT/SIGTERM drenam HTTP antes de fechar recursos NestJS; prazo máximo 25 s, grace period 30 s. Não existe consumer/ack financeiro, mesmo com mensagens disponíveis. Credenciais de migrator não entram nos ambientes API/worker; provisionador não recebe banco. Não usar `env_file` compartilhado para injetar todas as credenciais nos processos.
+
+`compose.test.yaml` mantém os serviços base isolados e acrescenta o perfil `foundation` para jobs/API/worker. O harness gera todos os nomes/portas e remove também esse perfil no cleanup, após validar ownership. Não iniciar esse arquivo manualmente com identificadores de desenvolvimento.
+
+Aceite parcial: `DOCKER_CONTEXT=default bun run test:infra --scope=p0`. Executa typecheck/build, unidades/runtime do host, integrações PostgreSQL/SQS/health e smoke Docker/Compose. `test:smoke` e `test:docker` acessam os testes Docker; `test:unit` inclui a suite histórica do host. Sem filtro, o aceite completo retorna não zero enquanto P1 não estiver implementado. P1 continua rastreável; o smoke de três scaffolds não comprova concorrência financeira. Setup resumido no [README](../README.md), decisões e pendências em [ARCHITECTURE.md](../ARCHITECTURE.md).

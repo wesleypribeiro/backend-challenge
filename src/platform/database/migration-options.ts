@@ -1,3 +1,4 @@
+import { migrationNames } from './migration-catalog.js';
 import { Migrator } from '@mikro-orm/migrations';
 import type { ConfigurationByRole } from '../config/configuration.js';
 import { ormOptions } from './orm-options.js';
@@ -10,7 +11,7 @@ export function migrationOptions(config: ConfigurationByRole['migrator']) {
     migrations: {
       tableName: 'mikro_orm_migrations',
       schema: 'public',
-      migrationsList: [Migration20261009000100],
+      migrationsList: [{ name: migrationNames[0], class: Migration20261009000100 }],
       transactional: true,
       allOrNothing: true,
       snapshot: false,

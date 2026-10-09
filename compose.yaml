@@ -1,5 +1,40 @@
 name: jungle-wagering
 
+x-runtime: &runtime
+  image: ${APP_IMAGE:-jungle-wagering-foundation:local}
+  build:
+    context: .
+    target: runtime
+  networks: [backend]
+  labels:
+    io.jungle.owner: ${INFRA_OWNER:-development}
+  stop_grace_period: 30s
+
+x-sqs-environment: &sqs-environment
+  NODE_ENV: production
+  AWS_ENDPOINT_URL: http://localstack:4566
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_QUEUE_NAME: ${SQS_QUEUE_NAME:-wager-transactions.fifo}
+  SQS_DLQ_NAME: ${SQS_DLQ_NAME:-wager-transactions-dlq.fifo}
+  SQS_MAX_ATTEMPTS: ${SQS_MAX_ATTEMPTS:-3}
+  SQS_REQUEST_TIMEOUT_MS: ${SQS_REQUEST_TIMEOUT_MS:-25000}
+
+x-app-environment: &app-environment
+  <<: *sqs-environment
+  DATABASE_URL: postgresql://wagering_app:${WAGERING_APP_PASSWORD:-local_app_password}@postgres:5432/${APP_DATABASE:-wagering}
+  PG_POOL_MAX: ${PG_POOL_MAX:-5}
+  PG_CONNECT_TIMEOUT_MS: ${PG_CONNECT_TIMEOUT_MS:-1000}
+  PG_QUERY_TIMEOUT_MS: ${PG_QUERY_TIMEOUT_MS:-1000}
+  SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-25000}
+
+x-prepared: &prepared
+  migrate:
+    condition: service_completed_successfully
+  provision:
+    condition: service_completed_successfully
+
 services:
   postgres:
     image: postgres:17.10-bookworm@sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
@@ -52,6 +87,57 @@ services:
       timeout: 5s
       retries: 30
       start_period: 15s
+
+  migrate:
+    <<: *runtime
+    command: [dist/bootstrap/migrate.js, up]
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      MIGRATION_DATABASE_URL: postgresql://wagering_migrator:${WAGERING_MIGRATOR_PASSWORD:-local_migrator_password}@postgres:5432/${APP_DATABASE:-wagering}
+      PG_POOL_MAX: 1
+      PG_CONNECT_TIMEOUT_MS: ${PG_CONNECT_TIMEOUT_MS:-1000}
+      PG_QUERY_TIMEOUT_MS: ${PG_QUERY_TIMEOUT_MS:-1000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  provision:
+    <<: *runtime
+    command: [dist/bootstrap/provision.js]
+    restart: "no"
+    environment: *sqs-environment
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  api:
+    <<: *runtime
+    command: [dist/bootstrap/api.js]
+    environment:
+      <<: *app-environment
+      API_PORT: 3000
+    ports:
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+    depends_on: *prepared
+    healthcheck:
+      test: [CMD, bun, --eval, "const r = await fetch('http://127.0.0.1:3000/health/ready', {signal: AbortSignal.timeout(2000)}); process.exit(r.ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    <<: *runtime
+    command: [dist/bootstrap/worker.js]
+    environment: *app-environment
+    depends_on: *prepared
+    healthcheck:
+      test: [CMD, bun, --no-env-file, dist/bootstrap/health-worker.js]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
 networks:
   backend:

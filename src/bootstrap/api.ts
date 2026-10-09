@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { installShutdown } from '../platform/lifecycle/shutdown.js';
+import { Readiness } from '../platform/health/readiness.js';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import { ApiModule } from '../composition/api.module.js';
@@ -23,7 +25,7 @@ if (import.meta.main) {
     const config = loadConfiguration('api');
     logger.event('process.starting', { runtime: `bun:${Bun.version}` });
     app = await createApiApplication(config, logger);
-    app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
+    installShutdown(app, app.get(Readiness), logger, config.shutdownTimeoutMs, app.getHttpServer());
     await app.listen(config.port, '0.0.0.0');
     logger.event('process.started', { port: Number(new URL(await app.getUrl()).port), runtime: `bun:${Bun.version}` });
   } catch (error) {

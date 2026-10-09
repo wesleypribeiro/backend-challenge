@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { installShutdown } from '../platform/lifecycle/shutdown.js';
+import { Readiness } from '../platform/health/readiness.js';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplicationContext } from '@nestjs/common';
 import { WorkerModule } from '../composition/worker.module.js';
@@ -19,7 +21,7 @@ if (import.meta.main) {
     const config = loadConfiguration('worker');
     logger.event('process.starting', { runtime: `bun:${Bun.version}` });
     const app = await createWorkerApplication(config, logger);
-    app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
+    installShutdown(app, app.get(Readiness), logger, config.shutdownTimeoutMs);
     logger.event('process.started', { runtime: `bun:${Bun.version}` });
   } catch (error) {
     logger.event('bootstrap.failed', { error }, 'error');

@@ -405,3 +405,102 @@ Criados: `src/platform/messaging/sqs/{sqs-connection,sqs.module,provision,provis
 Modificados: `src/composition/{api,worker}.module.ts`, `src/platform/logging/json-logger.ts`, `package.json` (somente script `infra:provision`), `docker/README.md`, `tasks.md` e este documento. Os testes anteriores foram preservados e executados. Nenhuma mudança de dependências, lockfile, imagens, Compose, banco ou decisões arquiteturais.
 
 Próximo lote recomendado, **sem implementação nesta execução**: **5.1 → 5.2 → 5.3 → 5.4**, health HTTP, probe worker, Compose com jobs/lifecycle e aceite integrado P0. P1 continua obrigatório antes do fechamento da change. O término deste lote não conclui P0 nem o desafio financeiro.
+
+
+## Sexto lote — P0 5.1–5.4 concluído; P1 pendente
+
+### Gate antes de 5.3: health HTTP e worker
+
+Implementados `/health/live`, `/health/ready` e `health:worker` no JavaScript compilado. Critérios PostgreSQL incluem `SELECT 1`, histórico `public.mikro_orm_migrations` compartilhado com o catálogo do runner e presença do schema. Probe usa conexão `pg` dedicada, sessão read-only, timeouts limitados e socket próprio destruído ao abortar/finalizar; não disputa nem cancela operações no pool MikroORM. O SQS reutiliza a configuração local e contrato de topologia, com cliente curto, uma tentativa e AbortSignal compartilhado. Prazo de I/O de 1700 ms reserva 300 ms do orçamento externo de 2 s para inicialização CLI, limpeza e resposta. Nenhuma mutation no probe.
+
+Evidências executadas antes de iniciar 5.3:
+
+- `bun run typecheck`: exit 0 após corrigir anotação `Record<string, string>` no ambiente do teste.
+- `DOCKER_CONTEXT=default bun test ./tests/integration/health.test.ts`: **2 pass, 0 fail, 76 assertions**, 27,76 s, com PostgreSQL e LocalStack reais.
+- `bun test ./tests/unit ./tests/smoke`: **58 pass, 0 fail, 258 assertions**, 18,73 s; preload recompila aplicação/fixtures.
+- SQL/histórico ausentes e filas ausentes produzem checks negativos; preparar recupera a mesma API. Drift técnico de visibility é detectado sem correção automática. Mensagem permanece com primeiro recebimento pelo harness e histórico não muda.
+- Pausa controlada dos dois containers mantém conexões sem resposta: API mantém liveness, readiness e CLI terminam em menos de 2 s, retomam depois de unpause e não deixam sessões `jungle-readiness`. Isso cobre o limite básico solicitado; não encerra a matriz adversarial P1 8.1.
+
+Sem mudanças nas dependências ou nos limites dos clientes de operação; sem entidades financeiras.
+
+### Compose e shutdown — 5.3
+
+Compose agora inclui `migrate`, `provision`, `api` e `worker` na imagem compilada, além das dependências. Somente migrator recebe `MIGRATION_DATABASE_URL`; somente aplicação recebe `DATABASE_URL`; provisionador recebe apenas configuração SQS. Dependências usam `service_healthy`/`service_completed_successfully`; worker não publica porta e aceita escala 3. `compose.test.yaml` ativa os processos via perfil `foundation`, preservando o uso anterior somente das dependências.
+
+SIGTERM/SIGINT ativam draining e cancelam probes ativos, param aceite HTTP, aguardam requests antes de fechar contexto NestJS/pools/clientes e encerram normalmente com código 0. Prazo máximo configurável até 25 s; timeout/falha retorna 1, com log seguro; Compose concede 30 s. Não há trabalho financeiro em andamento ou ack inventado. O teste de shutdown travado continua P1 8.2.
+
+- `docker --context default compose --env-file /dev/null config --quiet` e configuração de teste com perfil `foundation`: exit 0.
+- `bun run typecheck`: exit 0. Ajustado `app.close()` à interface pública NestJS; o sinal fica no evento `process.draining`, sem casts ou patches adicionais.
+- Primeira execução do smoke integrado: 80 asserções passaram, mas cleanup falhou porque perfil inativo excluía os novos containers do `down`. Corrigido cleanup para incluir `--profile foundation`; ownership continua validado antes de qualquer remoção. Os seis containers parados e a tag exclusivos dessa execução foram removidos após conferência de projeto/owner.
+- Reexecução `DOCKER_CONTEXT=default bun test ./tests/docker/compose.test.ts`: **1 pass, 0 fail, 82 assertions**, 33,54 s. Imagem sem fontes, jobs terminados antes dos processos, três workers simultâneos, health HTTP/CLI, credenciais separadas, config inválida, SIGINT/SIGTERM com saída 0, mensagem recebida uma única vez pelo harness após shutdown e cleanup completo.
+- `DOCKER_CONTEXT=default bun test ./tests/docker/preparation-failure.test.ts`: **1 pass, 0 fail, 20 assertions**, 28,38 s. Falha de configuração em cada job impede startup da API/worker; serviços/recursos preparados permanecem até cleanup próprio.
+
+### Arquivos do sexto lote
+
+- `ARCHITECTURE.md`
+- `README.md`
+- `compose.test.yaml`
+- `compose.yaml`
+- `docker/README.md`
+- `openspec/changes/bootstrap-backend-foundation/implementation-notes.md`
+- `openspec/changes/bootstrap-backend-foundation/tasks.md`
+- `package.json`
+- `scripts/test-infra.ts`
+- `src/bootstrap/api.ts`
+- `src/bootstrap/health-worker.ts`
+- `src/bootstrap/worker.ts`
+- `src/composition/api.module.ts`
+- `src/composition/worker.module.ts`
+- `src/platform/database/migration-catalog.ts`
+- `src/platform/database/migration-options.ts`
+- `src/platform/health/health.controller.ts`
+- `src/platform/health/health.module.ts`
+- `src/platform/health/readiness.ts`
+- `src/platform/lifecycle/shutdown.ts`
+- `src/platform/logging/json-logger.ts`
+- `src/platform/messaging/sqs/provision.ts`
+- `src/platform/messaging/sqs/queue-topology.ts`
+- `tests/docker/compose.test.ts`
+- `tests/docker/preparation-failure.test.ts`
+- `tests/integration/health.test.ts`
+- `tests/smoke/health-worker.test.ts`
+- `tests/smoke/shutdown.test.ts`
+- `tests/support/infrastructure.ts`
+- `tests/unit/health.test.ts`
+
+Não houve novas dependências, alteração do lockfile, imagens de dependências, tabelas ou entidades financeiras. `.dockerignore` foi conferido: a allowlist `src/**/*.ts` já inclui health/lifecycle e migrations; a imagem final continua sem `src/`, scripts de teste, `.env`, chaves ou fixtures. A prova Docker de exclusão permanece ativa.
+
+### Aceite integrado P0 — 5.4
+
+`DOCKER_CONTEXT=default bun run test:infra --scope=p0` executado com **exit 0**, relatório JSON `scope: p0`, `status: passed`, `p1: pending`, `financialTests: pending`. O wrapper executou sequencialmente:
+
+| Comando efetivo | Resultado real |
+|---|---|
+| `bun run typecheck` | exit 0, strict sem relaxamento |
+| `bun run build` | exit 0, ESM compilado com decorators/metadata |
+| `bun run test:unit` | **63 pass, 0 fail, 282 assertions**, 23,59 s; inclui os testes Bun existentes e novos testes técnicos |
+| `bun run test:integration` | **14 pass, 0 fail, 262 assertions**, 98,24 s; PostgreSQL/LocalStack reais |
+| `bun run test:smoke` | **5 pass, 0 fail, 155 assertions**, 99,91 s; mesmas suites de `test:docker`, imagem final e Compose integrado |
+
+São **82 testes distintos aprovados** no aceite, sem falhas finais ou skips. As suites recompilam aplicação/fixtures antes de usar o JavaScript; scripts usam Bun, sem Jest ou runtime Node obrigatório.
+
+Após o aceite, a revisão acrescentou uma asserção explícita ao teste existente: rollback da migration técnica no banco descartável deixa histórico legível e readiness/probe retornam `postgresql: down, sqs: up`; reaplicar recupera a mesma API. Foi executado novamente `bun run typecheck` (exit 0) e `DOCKER_CONTEXT=default bun test ./tests/integration/health.test.ts`: **2 pass, 0 fail, 87 assertions**, 28,31 s. Essa repetição inclui os dois testes de health já contados, não acrescenta testes distintos nem altera código da aplicação.
+
+Validações adicionais:
+
+- `bun run test:infra` sem filtro: **exit 1 esperado**, `scope: all`, `status: incomplete`, listando 6.1–9.3. Não executar apenas P0 e rotular como suite completa. O manifesto futuro `tests/p1/**/*.test.ts` e as tarefas P1 precisam ser completados antes de liberar o aceite sem filtro.
+- Compose de desenvolvimento e Compose de teste com perfil `foundation`: `config --quiet` aprovado. Não iniciamos nem removemos recursos de desenvolvimento.
+- `openspec validate bootstrap-backend-foundation --type change --strict --no-interactive --json`: válido, zero issues. As seis specs permanecem presentes; elas descrevem P0+P1, não somente este aceite parcial.
+- README original preservado byte a byte como prefixo: **27.497 bytes**. Documentação operacional apenas acrescentada; `ARCHITECTURE.md` registra D1–D10, estrutura, trade-offs, limites, autenticação futura e continuidade S13/F1–F7.
+- `git diff --check` aprovado. `dist/`, `.test-dist/`, `node_modules/` e `.env` continuam ignorados e sem arquivos rastreados.
+- Cleanup concluiu sem containers, redes ou volumes dos testes restantes; sem commit, push, PR ou archive. Branch mantida em `develop`.
+
+### Limitações e continuidade
+
+P0 comprovou runtime/build, preparação e conectividade reais, permissões/migrations reversíveis, precisão decimal técnica, health com prazo/recuperação e lifecycle básico. Essas evidências permitem começar a proposta F1 `implement-money-wallet-ledger`; não são prova de correção financeira. Não implementamos Money, Wallet, ledger, transações, inbox/outbox, consumers, endpoints ou métricas financeiras.
+
+P1 continua obrigatório: advisory lock de migrators e falhas SQL avançadas (6.x), reconciliação de drift/visibility/redelivery/redrive (7.x), indisponibilidade/draining/restarts/persistência avançados (8.x), cleanup adversarial/documentação/aceite completo (9.x). O smoke básico de três workers e pausa de dependências solicitado nesta execução não marca 8.x. Executar os pré-requisitos P1 antes dos testes financeiros correspondentes; concluir as 13 tarefas antes de fechar a change e entregar o desafio.
+
+A edição fixada do LocalStack segue sem persistência garantida ao recriar o emulador; PostgreSQL mantém volume. Testes foram executados no Docker context `default`, preservando o contexto global. Timeout de shutdown tem implementação, mas o cenário de recurso travado pertence a 8.2. A garantia do probe foi medida nas falhas reais deste lote; a matriz adversarial mais ampla permanece 8.1.
+
+Fontes técnicas consultadas durante o apply: [pg.Client — timeouts e fechamento](https://node-postgres.com/apis/client), [Compose — dependências e ordem de startup](https://docs.docker.com/compose/how-tos/startup-order/), [NestJS — lifecycle](https://docs.nestjs.com/fundamentals/lifecycle-events). Os detalhes de cancelamento também foram conferidos no código das versões instaladas e validados com serviços reais; documentação externa não substituiu os testes.

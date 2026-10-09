@@ -18,6 +18,32 @@ services:
     ports: !override
       - "127.0.0.1::4566"
 
+  migrate:
+    extends:
+      file: compose.yaml
+      service: migrate
+    profiles: [foundation]
+
+  provision:
+    extends:
+      file: compose.yaml
+      service: provision
+    profiles: [foundation]
+
+  api:
+    extends:
+      file: compose.yaml
+      service: api
+    profiles: [foundation]
+    ports: !override
+      - "127.0.0.1::3000"
+
+  worker:
+    extends:
+      file: compose.yaml
+      service: worker
+    profiles: [foundation]
+
 networks:
   backend:
     labels:

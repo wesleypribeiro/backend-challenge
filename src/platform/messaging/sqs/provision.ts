@@ -1,46 +1,7 @@
 import { CreateQueueCommand, QueueDoesNotExist, SetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 import { SqsConnection } from './sqs-connection.js';
 import type { ResolvedQueue, SqsConfiguration } from './sqs-connection.js';
-import { ProvisionConflict } from './provision-conflict.js';
-import type { QueueAttribute, QueueRole } from './provision-conflict.js';
-
-const common = {
-  FifoQueue: 'true', ContentBasedDeduplication: 'false',
-  VisibilityTimeout: '60', ReceiveMessageWaitTimeSeconds: '20',
-} as const;
-const attributes = {
-  main: { ...common, MessageRetentionPeriod: '345600' },
-  dlq: { ...common, MessageRetentionPeriod: '1209600' },
-} as const;
-
-function checkBase(queue: ResolvedQueue, role: QueueRole): void {
-  for (const [key, value] of Object.entries(attributes[role])) {
-    if (queue.attributes[key] !== value) throw new ProvisionConflict(role, key as QueueAttribute);
-  }
-  if (role === 'dlq' && queue.attributes.RedrivePolicy) throw new ProvisionConflict(role, 'RedrivePolicy');
-}
-
-function policy(value: string | undefined): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(value ?? '{}');
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch { return {}; }
-}
-
-function checkRedrive(main: ResolvedQueue, dlq: ResolvedQueue | undefined): void {
-  const actual = policy(main.attributes.RedrivePolicy);
-  if (!dlq || actual.deadLetterTargetArn !== dlq.arn || String(actual.maxReceiveCount) !== '5') {
-    throw new ProvisionConflict('main', 'RedrivePolicy');
-  }
-}
-
-function checkAllow(dlq: ResolvedQueue, main: ResolvedQueue | undefined): void {
-  const actual = policy(dlq.attributes.RedriveAllowPolicy);
-  if (!main || actual.redrivePermission !== 'byQueue' || !Array.isArray(actual.sourceQueueArns) ||
-      actual.sourceQueueArns.length !== 1 || actual.sourceQueueArns[0] !== main.arn) {
-    throw new ProvisionConflict('dlq', 'RedriveAllowPolicy');
-  }
-}
+import { queueAttributes as attributes, checkBase, checkRedrive, checkAllow, checkTopology } from './queue-topology.js';
 
 export async function provisionQueues(
   connection: SqsConnection,
@@ -88,9 +49,6 @@ export async function provisionQueues(
   // Sucesso exige leitura dos atributos efetivos do emulador, não apenas resposta de Create/Set.
   dlq = await connection.resolveQueue(names.dlqName, signal);
   main = await connection.resolveQueue(names.queueName, signal);
-  checkBase(dlq, 'dlq');
-  checkBase(main, 'main');
-  checkRedrive(main, dlq);
-  checkAllow(dlq, main);
+  checkTopology(main, dlq);
   return { main, dlq };
 }

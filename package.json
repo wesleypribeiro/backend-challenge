@@ -8,6 +8,7 @@
     "bun": "1.4.2"
   },
   "scripts": {
+    "health:worker": "bun --no-env-file dist/bootstrap/health-worker.js",
     "infra:provision": "bun --no-env-file dist/bootstrap/provision.js",
     "db:migrate": "bun --no-env-file dist/bootstrap/migrate.js up",
     "db:rollback": "bun --no-env-file dist/bootstrap/migrate.js down",
@@ -17,7 +18,9 @@
     "start:api": "bun dist/bootstrap/api.js",
     "start:worker": "bun dist/bootstrap/worker.js",
     "test": "bun test",
-    "test:smoke": "bun test",
+    "test:unit": "bun test ./tests/unit ./tests/smoke",
+    "test:smoke": "bun test ./tests/docker",
+    "test:infra": "bun scripts/test-infra.ts",
     "test:docker": "bun test ./tests/docker",
     "test:integration": "bun test ./tests/integration"
   },

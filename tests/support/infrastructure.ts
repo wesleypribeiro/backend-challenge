@@ -29,7 +29,7 @@ export async function dockerCommand(args: string[], env: Record<string, string> 
       'Check Docker/Compose availability and the isolated project.';
     throw new Error(`Docker ${args[0]} failed (exit ${code}). ${hint}`);
   }
-  return stdout.trim();
+  return (args[0] === 'logs' ? `${stdout}${stderr}` : stdout).trim();
 }
 
 export class TestInfrastructure {
@@ -47,12 +47,16 @@ export class TestInfrastructure {
     this.#env = {
       TEST_PROJECT: this.#project, TEST_DATABASE: this.databaseName,
       INFRA_OWNER: this.#owner, APP_DATABASE: this.databaseName,
-      POSTGRES_PORT: '0', LOCALSTACK_PORT: '0',
+      POSTGRES_PORT: '0', LOCALSTACK_PORT: '0', API_PORT: '0',
+      APP_IMAGE: `jungle-foundation-p0:${this.#id}`,
+      SQS_QUEUE_NAME: this.queueName, SQS_DLQ_NAME: this.queueName.replace('.fifo', '-dlq.fifo'),
       POSTGRES_ADMIN_PASSWORD: 'local_test_admin_password',
       WAGERING_APP_PASSWORD: passwords.app, WAGERING_MIGRATOR_PASSWORD: passwords.migrator,
     };
   }
 
+  get image(): string { return this.#env.APP_IMAGE!; }
+  get dlqName(): string { return this.#env.SQS_DLQ_NAME!; }
   get project(): string { return this.#project; }
   get postgresPort(): number { return this.#postgresPort; }
   get sqsEndpoint(): string { return this.#endpoint; }
@@ -77,7 +81,7 @@ export class TestInfrastructure {
     console.info(`[infra] Starting isolated project ${instance.project} (${variant})`);
     try {
       await instance.compose(['config', '--quiet']);
-      await instance.compose(['up', '--detach', '--wait', '--wait-timeout', '120'], 240_000);
+      await instance.compose(['up', '--detach', '--wait', '--wait-timeout', '120', 'postgres', 'localstack'], 240_000);
       instance.#postgresPort = await instance.port('postgres', 5432);
       instance.#endpoint = `http://127.0.0.1:${await instance.port('localstack', 4566)}`;
       instance.#sqs = new SQSClient({
@@ -96,7 +100,7 @@ export class TestInfrastructure {
     }
   }
 
-  private async port(service: string, target: number): Promise<number> {
+  async port(service: string, target: number): Promise<number> {
     const mapping = await this.compose(['port', service, String(target)]);
     const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
     if (!match) throw new Error(`Unexpected port mapping for ${this.#project}/${service}`);
@@ -134,7 +138,7 @@ export class TestInfrastructure {
         }
       }
     }
-    await this.compose(['down', '--volumes', '--timeout', '5']);
+    await this.compose(['--profile', 'foundation', 'down', '--volumes', '--timeout', '30'], 60_000);
     for (const kind of ['container', 'network', 'volume'] as const) {
       if ((await this.resources(kind)).length) throw new Error(`Cleanup incomplete for ${this.#project}/${kind}`);
     }
