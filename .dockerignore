@@ -1,0 +1,25 @@
+# Somente entradas necessárias ao build podem entrar no contexto.
+**
+!Dockerfile
+!package.json
+!bun.lock
+!bunfig.toml
+!.bun-version
+!tsconfig.json
+!tsconfig.build.json
+!scripts/
+!scripts/build.ts
+!src/
+!src/**/
+!src/**/*.ts
+# Defesa adicional para arquivos locais sob src/.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/secrets/**
+**/.aws/**
+**/node_modules/**
+**/*.log

@@ -13,7 +13,8 @@
     "start:api": "bun dist/bootstrap/api.js",
     "start:worker": "bun dist/bootstrap/worker.js",
     "test": "bun test",
-    "test:smoke": "bun test"
+    "test:smoke": "bun test",
+    "test:docker": "bun test ./tests/docker/image.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1148.0",

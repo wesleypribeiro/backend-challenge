@@ -53,8 +53,8 @@ test('compiled API and worker stay alive and can be stopped independently', asyn
 
   try {
     const [address] = await Promise.all([
-      api.waitFor(/API listening on http:\/\/[^:]+:(\d+)/),
-      worker.waitFor(/Worker application context started/),
+      api.waitFor(/"event":"process.started","port":(\d+)/),
+      worker.waitFor(/"event":"process.started"/),
     ]);
     const response = await fetch(`http://127.0.0.1:${address[1]}/unimplemented`, {
       signal: AbortSignal.timeout(2_000),
@@ -66,7 +66,7 @@ test('compiled API and worker stay alive and can be stopped independently', asyn
 
     const secondApi = startService('dist/bootstrap/api.js');
     processes.push(secondApi);
-    const secondAddress = await secondApi.waitFor(/API listening on http:\/\/[^:]+:(\d+)/);
+    const secondAddress = await secondApi.waitFor(/"event":"process.started","port":(\d+)/);
     await worker.stop();
     expect(secondApi.process.exitCode).toBeNull();
     const stillServing = await fetch(`http://127.0.0.1:${secondAddress[1]}/unimplemented`, {

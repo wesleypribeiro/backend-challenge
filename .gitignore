@@ -4,6 +4,7 @@ node_modules/
 
 # Build outputs
 dist/
+.test-dist/
 build/
 *.tsbuildinfo
 
@@ -11,7 +12,8 @@ build/
 .env
 .env.*
 !.env.example
-!.env.*.example
+.aws/
+secrets/
 
 # Private keys and certificates
 *.pem

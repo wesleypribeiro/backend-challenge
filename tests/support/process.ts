@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { testProcessEnvironment } from './environment.js';
 
 export const projectRoot = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -17,10 +18,10 @@ export function runBun(args: string[], cwd = projectRoot) {
   };
 }
 
-export function startService(entrypoint: string) {
-  const processHandle = Bun.spawn([process.execPath, entrypoint], {
+export function startService(entrypoint: string, overrides: Record<string, string | undefined> = {}, extraArgs: string[] = []) {
+  const processHandle = Bun.spawn([process.execPath, '--no-env-file', entrypoint, ...extraArgs], {
     cwd: projectRoot,
-    env: { ...process.env, API_PORT: '0', NO_COLOR: '1' },
+    env: testProcessEnvironment(overrides),
     stdout: 'pipe',
     stderr: 'pipe',
   });

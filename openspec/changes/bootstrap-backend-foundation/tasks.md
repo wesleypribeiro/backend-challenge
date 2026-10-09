@@ -4,7 +4,7 @@ P0 libera o início do domínio financeiro após evidências reais; P1 completa 
 
 O checklist registra somente tarefas com evidências de implementação. Manter a change aberta após este lote e após P0 enquanto houver pendências P1. As decisões D1–D10 e a matriz S13/F1–F7 em `design.md` continuam sendo referência.
 
-Evidências do primeiro lote (somente 1.1–1.4): [implementation-notes.md](implementation-notes.md). Docker e integração com PostgreSQL/SQS ainda não foram implementados ou validados.
+Evidências dos lotes 1.1–1.4 e 2.1 → 1.5 → 2.2: [implementation-notes.md](implementation-notes.md). O segundo lote inclui correção do índice Git, configuração validada, imagem Docker executada e logs JSON/correlação. Compose, integração com PostgreSQL/SQS, health e migrations continuam pendentes.
 
 ## 1. P0 — Build compilado e processos sob Bun
 
@@ -12,12 +12,12 @@ Evidências do primeiro lote (somente 1.1–1.4): [implementation-notes.md](impl
 - [x] 1.2 Configurar TypeScript strict, build ESM, decorators/metadata, imports compilados e scripts `typecheck`/`build`; verificar build limpo e diagnóstico não zero para erro de tipo, sem usar typecheck como prova de runtime. Referência: `backend-runtime`, D2.
 - [x] 1.3 Criar composição NestJS e entrypoints independentes `api`/`worker`, carregando metadata antes do bootstrap, sem consumer ou entidades financeiras; verificar boot dos dois processos JavaScript com Bun e independência de encerramento. Referência: `backend-runtime`, D1.
 - [x] 1.4 Configurar Bun Test e smoke técnico do build compilado: metadata de decorators, injeção por construtor e imports entre módulos; verificar que a dependência injetada é usada de fato e que falha de DI/import reprova a suite, sem execução direta de `src/` como substituto. Referência: `backend-runtime`, `infrastructure-testing`, D2/D10.
-- [ ] 1.5 Criar Dockerfile com versão Bun fixada e artefatos compilados; verificar boot real da API e worker na imagem final sem bind mount/fallback de fontes e comprovar Bun 1.x como runtime. Completar a prova de rotas/migrations ao fechar 5.4. Referência: `backend-runtime`, `local-infrastructure`.
+- [x] 1.5 Criar Dockerfile com versão Bun fixada e artefatos compilados; verificar boot real da API e worker na imagem final sem bind mount/fallback de fontes e comprovar Bun 1.x como runtime. Completar a prova de rotas/migrations ao fechar 5.4. Referência: `backend-runtime`, `local-infrastructure`.
 
 ## 2. P0 — Configuração e dependências locais
 
-- [ ] 2.1 Implementar configuração validada por papel, `.env.example`, `.gitignore` e `.dockerignore`; verificar variáveis ausentes/inválidas, credenciais locais fictícias, endpoint SQS explícito sem fallback AWS e exclusão de segredos do Git/contexto Docker. Referência: `backend-runtime`, D3.
-- [ ] 2.2 Implementar logs JSON de lifecycle/erro e correlação HTTP; verificar JSON parseável, propagação/geração de `x-correlation-id` e ausência de senha, token e connection string em erro controlado. Referência: `backend-runtime`, D9.
+- [x] 2.1 Implementar configuração validada por papel, `.env.example`, `.gitignore` e `.dockerignore`; verificar variáveis ausentes/inválidas, credenciais locais fictícias, endpoint SQS explícito sem fallback AWS e exclusão de segredos do Git/contexto Docker. Referência: `backend-runtime`, D3.
+- [x] 2.2 Implementar logs JSON de lifecycle/erro e correlação HTTP; verificar JSON parseável, propagação/geração de `x-correlation-id` e ausência de senha, token e connection string em erro controlado. Referência: `backend-runtime`, D9.
 - [ ] 2.3 Criar base Compose com PostgreSQL, LocalStack, rede e volume, usando imagens fixadas e pré-requisitos documentados; verificar `docker compose config`, PostgreSQL saudável e consulta SQS real, com diagnóstico de ativação ausente quando exigida pela versão. Referência: `local-infrastructure`, D4.
 - [ ] 2.4 Configurar database e papéis `wagering_app`/`wagering_migrator` com credenciais separadas; verificar login de ambos e ausência de DDL/propriedade do schema para a aplicação, inclusive em `public`. Referência: `postgresql-foundation`, D5.
 - [ ] 2.5 Preparar `compose.test.yaml` e helpers mínimos de recursos isolados com setup/polling/cleanup; verificar PostgreSQL/LocalStack reais, identificadores exclusivos, limpeza normal restrita e falha explícita por Docker/pré-requisito ausente. Essa base suporta os testes seguintes; o cleanup adversarial fica em 9.1. Referência: `infrastructure-testing`.

@@ -1,6 +1,8 @@
-# Evidências de implementação — lote P0 1.1–1.4
+# Evidências de implementação — bootstrap-backend-foundation
 
-Escopo autorizado: toolchain, TypeScript/build ESM, bootstrap NestJS independente e testes técnicos com Bun Test. Somente 4 das 34 tarefas foram concluídas. Esta evidência não conclui P0 nem a change e não comprova garantias financeiras.
+Estado atual: **7/34 tarefas concluídas** — 1.1–1.5, 2.1 e 2.2. Esta evidência não conclui P0 nem a change e não comprova garantias financeiras.
+
+As seções seguintes registram o primeiro lote, que concluiu 1.1–1.4. O segundo lote e suas evidências estão ao final deste documento; os registros históricos abaixo não substituem o estado atual.
 
 ## Versões fixadas
 
@@ -88,4 +90,93 @@ tests/smoke/{bootstrap,toolchain}.test.ts
 
 Artefatos OpenSpec atualizados: `tasks.md` com evidências e marcação apenas de 1.1–1.4; `design.md` com versões e execução de D2; este registro novo. Proposal e as seis specs foram preservados. `node_modules/`, `dist/` e `.test-dist/` são saídas locais geradas, não fontes para versionamento. `.gitignore`/`.dockerignore` continuam na tarefa 2.1; nenhum commit, push ou PR faz parte deste lote.
 
-Próximo lote recomendado: **2.1 → 1.5 → 2.2**, para preparar configuração/arquivos de exclusão antes da imagem final e depois logs estruturados. Continuar então com 2.3–2.5 (Compose, papéis PostgreSQL e harness). Essa ordem respeita a dependência do contexto Docker em relação a 2.1 sem ampliar o escopo desta execução. Health, migrations e testes com PostgreSQL/LocalStack reais permanecem pendentes.
+Ao término do primeiro lote, a sequência recomendada foi **2.1 → 1.5 → 2.2**, para preparar configuração/arquivos de exclusão antes da imagem final e depois logs estruturados. Essa sequência foi executada no lote abaixo.
+
+## Segundo lote — Git, 2.1 → 1.5 → 2.2
+
+Implementado na branch `develop`, preservando 1.1–1.4 e sem alterar dependências ou `bun.lock`. Os entrypoints e testes existentes receberam apenas a integração da configuração/logging deste lote. Não foram implementados Compose, clientes PostgreSQL/SQS, migrations, health, consumers ou domínio financeiro. Nenhum commit, push ou PR foi criado.
+
+### Correção de versionamento
+
+`.test-dist/` passou a ser ignorada. `git rm -r --cached .test-dist` removeu do índice `consumer.module.js`, `dependency.module.js` e `di-probe.js`, mantendo arquivos locais; a suite continua regenerando suas próprias fixtures. Essa é a única alteração preparada no índice nesta execução.
+
+`git check-ignore` comprovou exclusão de `dist/`, `node_modules/`, `.test-dist/`, `.env`, `.env.production`, `.env.local`, `.aws/credentials`, `secrets/`, chaves, logs e coverage. `git ls-files` confirmou ausência dos diretórios gerados e caminhos sensíveis verificados no índice. A exceção para exemplos foi restringida a `.env.example`, que contém apenas credenciais fictícias e pode ser versionada.
+
+### Configuração por papel — 2.1
+
+`loadConfiguration` valida antes do bootstrap NestJS e retorna configuração imutável, sem estabelecer conexões. Erros citam apenas nomes de variáveis e terminam o processo com exit code 1.
+
+| Papel | Variáveis obrigatórias além de `NODE_ENV` | Exclusões |
+|---|---|---|
+| `api` | `DATABASE_URL`, endpoint/região/credenciais SQS e nomes das duas filas | Recusa `MIGRATION_DATABASE_URL`; valida `API_PORT` |
+| `worker` | Mesmas dependências da API | Recusa credencial migrator; ignora porta HTTP |
+| `migrator` | `MIGRATION_DATABASE_URL` | Não exige HTTP nem SQS; não recebe URL da aplicação na configuração retornada |
+| `provision` | Endpoint/região/credenciais SQS e nomes das filas | Não exige PostgreSQL/HTTP; recusa credencial migrator |
+
+Os papéis migrator/provision têm somente validação de configuração neste lote; seus comandos e operações continuam pendentes.
+
+- `NODE_ENV` aceita `development`, `test` e `production`; não seleciona AWS real. O transporte desta fundação é exclusivamente local. Endpoint explícito HTTP(S) aceita `localhost`, `127.0.0.1`, `[::1]`, `localstack` ou `host.docker.internal`, sem userinfo, query, fragmento ou caminho adicional. Região é `us-east-1`, credenciais são exatamente `test`/`test`; session token é recusado. `AWS_PROFILE` e endpoints alternativos não substituem os campos explícitos retornados. Outros nomes de emulador exigirão uma alteração deliberada dessa lista.
+- URLs PostgreSQL exigem usuário `wagering_app` ou `wagering_migrator`, conforme o papel, senha, host e database. Isso valida configuração; comprovar privilégios reais continua em 2.4/3.4.
+- `API_PORT` tem default 3000, intervalo 1–65535, permitindo 0 apenas em testes. Filas exigem nomes FIFO distintos, com até 80 caracteres.
+- Defaults e limites: `PG_POOL_MAX=5` (1–20), `PG_CONNECT_TIMEOUT_MS=1000` (1–10000), `PG_QUERY_TIMEOUT_MS=1000` (1–30000), `SHUTDOWN_TIMEOUT_MS=25000` (1–25000), `SQS_REQUEST_TIMEOUT_MS=25000` (21000–60000, maior que o long poll de 20 s), `SQS_MAX_ATTEMPTS=3` (1–5). Os valores são validados agora; sua aplicação aos clientes/draining ocorrerá nas respectivas tarefas, sem antecipar a implementação.
+- `.env.example` documenta variáveis e diferenças host/container, mantendo a URL migrator comentada para não fornecê-la acidentalmente à API/worker. Os processos de teste usam ambiente controlado e `--no-env-file`.
+
+### Imagem compilada — 1.5
+
+Dockerfile multi-stage usa `oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895`, digest do índice OCI consultado no registry. Instalação congelada separa dependências de build e produção. O build confere a versão contra `.bun-version`, roda o compilador existente e remove source maps da imagem.
+
+A imagem final contém `dist/`, dependências de produção e `package.json`, com usuário `bun` não root. `ENTRYPOINT ["bun", "--no-env-file"]` executa diretamente o JavaScript, por padrão `dist/bootstrap/api.js`; substituir o comando por `dist/bootstrap/worker.js` inicia o worker. Sem bind mounts, TypeScript original, compilador ou ferramentas de teste. Bun e Docker documentam os mecanismos utilizados: [Bun com Docker](https://bun.com/guides/ecosystem/docker), [contexto e dockerignore](https://docs.docker.com/build/concepts/context/).
+
+`.dockerignore` permite somente os inputs necessários ao build e exclui novamente segredos sob `src/`. O teste copia o projeto para um contexto temporário, adiciona sentinelas `.env`, chaves e diretórios gerados, e inspeciona um estágio temporário com `COPY .` para provar que esses arquivos não são enviados ao build. O Dockerfile versionado não contém esse estágio de teste. A imagem final é inspecionada separadamente quanto a fontes, source maps, fixtures, segredos e TypeScript.
+
+`test:docker` inicia dois containers reais, com `NODE_ENV=production`, configuração fictícia e rede `none`; faz HTTP dentro do container da API e comprova correlationId, Bun 1.4.2 e independência do worker ao encerrar a API. A ausência de PostgreSQL/SQS nesse smoke é intencional: estes adapters ainda não existem. Resposta HTTP 404 confirma o servidor sem registrar endpoints fora do escopo. Rotas de health e migrations na imagem continuam nos aceites 5.1/5.4.
+
+### Logs JSON e correlação — 2.2
+
+`JsonLogger` implementa `LoggerService` do NestJS, incluindo logs do framework, bootstrap e hooks de shutdown. Registros contêm `timestamp`, `level`, `service`, `event` e `correlationId` quando houver requisição. Eventos próprios: `process.starting`, `process.started`, `process.stopping`, `process.stopped`, `bootstrap.failed` e `http.completed`. Logs de erro/fatal vão para stderr; demais níveis, stdout. [NestJS: logger customizado](https://docs.nestjs.com/techniques/logger)
+
+O middleware preserva `x-correlation-id` que corresponda a `^[A-Za-z0-9._:-]{1,128}$`; ausente/inválido gera UUID v4 e o devolve no header. `AsyncLocalStorage` mantém o contexto dos logs ao atravessar operações assíncronas e requisições concorrentes. O log HTTP contém método, status e duração, sem URL/query, headers ou body. [NestJS: AsyncLocalStorage](https://docs.nestjs.com/recipes/async-local-storage)
+
+Por decisão de segurança, o logger só serializa campos operacionais permitidos. Mensagens livres, stack traces, objetos arbitrários e `cause` de erros são descartados, inclusive quando vêm do logger NestJS. Erros registram tipo seguro, códigos operacionais conhecidos e nomes de variáveis inválidas quando aplicável. Isso reduz detalhes de diagnóstico, mas impede que uma mensagem contendo connection string ou token os exponha; não depende de regex tentar identificar todos os segredos possíveis. Novos diagnósticos devem ganhar campos estruturados explícitos. Eventos de health degradada serão ligados quando health existir em 5.1.
+
+### Evidências do segundo lote
+
+| Verificação executada | Resultado |
+|---|---|
+| `git rm -r --cached .test-dist` | 3 arquivos retirados do índice, preservados localmente |
+| Exclusões Git e inspeção do índice | Caminhos gerados/sensíveis verificados não serão adicionados por `git add` normal; `.env.example` permitido |
+| `bun install --frozen-lockfile` | Sucesso; dependências/lockfile sem mudanças |
+| `bun run typecheck` | Sucesso após corrigir a assinatura de retorno por papel |
+| `bun run build` | Sucesso; mesmo build ESM já aprovado no lote anterior |
+| `bun test` | **51 pass, 0 fail, 215 asserções** em quatro arquivos, incluindo regressão do primeiro lote |
+| `DOCKER_CONTEXT=default bun run test:docker` | **1 pass, 0 fail, 22 asserções**, 10,30 s na execução final; imagem fixada por digest, API/worker em `NODE_ENV=production`, contexto/imagem inspecionados e recursos temporários removidos |
+| `openspec validate bootstrap-backend-foundation --type change --strict --no-interactive --json` | Change válida, zero issues, exit code 0 |
+| `openspec instructions apply --change bootstrap-backend-foundation --json` | 7 concluídas, 27 pendentes; somente 1.5, 2.1 e 2.2 acrescentadas ao lote anterior |
+| `git diff --check` e `git diff --cached --check` | Sucesso; sem erros de whitespace |
+
+Cobertura nova: variáveis ausentes/inválidas, separação de papéis, URLs/credenciais locais, limites numéricos, boot inválido real com diagnóstico seguro; JSON de startup/shutdown/erro; IDs válidos, ausentes, inválidos e de tamanho limite; 12 requisições simultâneas com erro controlado preservando correlação e sem vazar senha/token/connection string. O erro de conexão é injetado em middleware técnico exclusivamente no processo do teste, sem criar endpoint de produção ou alegar teste PostgreSQL.
+
+Problemas encontrados e resolvidos:
+
+1. `desktop-linux`, contexto Docker inicialmente ativo, apontava para socket ausente. `docker --context default version` encontrou Engine 29.8.1 funcional. Os testes usam `DOCKER_CONTEXT=default` explicitamente, sem trocar contexto global. Ausência de Docker no comando de imagem causa falha, nunca skip silencioso.
+2. O primeiro typecheck apontou `TS2352` no retorno genérico discriminado de configuração. Uma assinatura pública genérica com implementação retornando a união por papel resolveu o erro, preservando TypeScript strict.
+3. Uma conferência de existência das fixtures coincidiu com a limpeza/recompilação feita pelo preload de testes. A conferência foi executada sequencialmente após a suite e passou; `git rm --cached` não apagou os arquivos locais. Não executar duas suites que compartilhem `dist/`/`.test-dist/` simultaneamente.
+
+### Arquivos do segundo lote e reprodução
+
+Criados: `.env.example`, `.dockerignore`, `Dockerfile`, `src/platform/config/configuration.ts`, `src/platform/logging/{json-logger,request-context,http-logging,logging.module}.ts`, `tests/support/environment.ts`, `tests/smoke/{configuration,logging}.test.ts` e `tests/docker/image.test.ts`.
+
+Modificados: `.gitignore`, `package.json` (somente script `test:docker`), `src/bootstrap/{api,worker}.ts`, `src/composition/{api,worker}.module.ts`, `tests/support/process.ts`, `tests/smoke/bootstrap.test.ts`, `tasks.md` e este documento. As três exclusões no índice são as fixtures compiladas de `.test-dist/`; as fontes continuam em `tests/fixtures/`. README, proposal, design, seis specs, versões e lockfile foram preservados.
+
+```bash
+export PATH="$HOME/.bun/bin:$PATH"
+bun install --frozen-lockfile
+bun run typecheck
+bun run build
+bun test
+DOCKER_CONTEXT=default bun run test:docker
+```
+
+Para executar no host, copiar os valores fictícios de `.env.example` para `.env` local e usar `bun run start:api` / `bun run start:worker`. O smoke Docker prepara sua própria configuração e não requer `.env` nem serviços externos. Em máquinas com outro daemon funcional, ajustar ou omitir `DOCKER_CONTEXT`. Os testes de imagem são explícitos; `bun test` continua sendo a suite do host, sem declarar que testou Docker.
+
+Próximo lote recomendado: **2.3 → 2.4 → 2.5**, para Compose com PostgreSQL/LocalStack, papéis reais e harness de integração. Migrations, clientes, filas, health, shutdown com deadline e todos os itens P1 permanecem pendentes.
