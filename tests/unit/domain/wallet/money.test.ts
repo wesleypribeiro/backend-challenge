@@ -35,6 +35,18 @@ test('rejects invalid ISO 4217 currencies', () => {
   expect(() => Money.from({ amount: '10.00', currency: 'BRLX' })).toThrow(/Invalid ISO 4217 currency/);
 });
 
+test('rejects fictional or non-currency ISO 4217-style codes', () => {
+  for (const currency of ['ZZZ', 'XXX', 'XTS', 'TST', 'FAKE', 'XBT', 'XAU']) {
+    expect(() => Money.from({ amount: '10.00', currency })).toThrow(/Invalid ISO 4217 currency/);
+  }
+});
+
+test('keeps multi-currency support with real ISO 4217 codes', () => {
+  for (const currency of ['BRL', 'USD', 'EUR', 'JPY', 'GBP', 'CHF', 'CAD', 'AUD']) {
+    expect(Money.from({ amount: '10.00', currency }).currency).toBe(currency);
+  }
+});
+
 test('add is immutable and isolated by currency', () => {
   const m1 = Money.from({ amount: '10.00', currency: 'USD' });
   const m2 = Money.from({ amount: '5.50', currency: 'USD' });

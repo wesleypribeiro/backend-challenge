@@ -1,6 +1,8 @@
 import type { EntityManager } from '@mikro-orm/postgresql';
 import type { Wallet } from '../../domain/wallet/wallet.js';
 import { LedgerDirection, type WalletLedgerEntry } from '../../domain/wallet/ledger-entry.js';
+import { WagerTransaction } from '../../domain/wagering/wager-transaction.js';
+import { computePayloadHash } from '../../domain/wagering/payload-hash.js';
 import {
   WalletSchema,
   fromWalletDomain,
@@ -9,11 +11,17 @@ import {
   WalletLedgerEntrySchema,
   fromWalletLedgerEntryDomain,
 } from './entities/wallet-ledger-entry.entity.js';
+import {
+  WagerTransactionSchema,
+  fromWagerTransactionDomain,
+} from './entities/wager-transaction.entity.js';
 
 /**
- * Unit of Work adapter for opening a wallet. Both change sets are scheduled in
- * the same EntityManager and written by a single flush, so the wallet row and
- * its OPENING ledger entry share one SQL transaction (all-or-nothing).
+ * Unit of Work adapter for opening a wallet. All rows — wallet, its OPENING
+ * ledger entry and the internal OPENING `WagerTransaction` (F1 D10 handoff) —
+ * are scheduled in the same EntityManager and written by a single flush, so
+ * they share one SQL transaction (all-or-nothing) and the ledger entry's
+ * `transaction_id` always references a real transaction row.
  *
  * Before scheduling anything, `saveOpen` enforces the opening correspondence:
  * a positive balance requires its OPENING CREDIT entry (and vice versa), and
@@ -29,8 +37,42 @@ export class WalletRepository {
     this.em.create(WalletSchema, fromWalletDomain(wallet));
     if (ledgerEntry) {
       this.em.create(WalletLedgerEntrySchema, fromWalletLedgerEntryDomain(ledgerEntry));
+      this.em.create(
+        WagerTransactionSchema,
+        fromWagerTransactionDomain(this.buildOpeningTransaction(wallet, ledgerEntry)),
+      );
     }
     await this.em.flush();
+  }
+
+  /**
+   * The internal OPENING transaction for a positive-balance wallet. Canonical
+   * identifiers (`opening-{walletId}` / `internal:opening-{walletId}`) make
+   * the row idempotent by construction; the id is the ledger entry's
+   * transactionId so the FK always resolves.
+   */
+  private buildOpeningTransaction(wallet: Wallet, entry: WalletLedgerEntry): WagerTransaction {
+    const roundId = 'internal';
+    const gameId = 'internal';
+    return WagerTransaction.opening({
+      id: entry.transactionId,
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId,
+      gameId,
+      money: entry.amount,
+      payloadHash: computePayloadHash({
+        providerId: 'internal',
+        externalTransactionId: `opening-${wallet.id}`,
+        playerId: wallet.playerId,
+        walletId: wallet.id,
+        roundId,
+        gameId,
+        kind: 'OPENING',
+        money: entry.amount,
+      }),
+      createdAt: entry.createdAt,
+    });
   }
 
   private assertOpeningPair(wallet: Wallet, entry?: WalletLedgerEntry): void {
@@ -70,6 +112,16 @@ export class WalletRepository {
     if (entry.direction !== LedgerDirection.Credit) {
       throw new Error(
         `Ledger entry for a wallet opening must be a CREDIT, got ${entry.direction}`,
+      );
+    }
+    if (!entry.isBalanced()) {
+      throw new Error(
+        `Ledger entry arithmetic is not balanced: ${entry.direction} ${entry.amount.amountString} cannot move ${entry.balanceBefore.amountString} to ${entry.balanceAfter.amountString}`,
+      );
+    }
+    if (!entry.amount.equals(balance)) {
+      throw new Error(
+        `Ledger entry amount ${entry.amount.amountString} does not match wallet balance ${balance.amountString}`,
       );
     }
     if (!entry.balanceBefore.isZero()) {

@@ -85,3 +85,76 @@ test('rehydrate restores persisted state without revalidating transitions', () =
   expect(wallet.createdAt).toBe(createdAt);
   expect(wallet.updatedAt).toBe(updatedAt);
 });
+
+test('debit reduces the balance and increments the version', () => {
+  const { wallet } = Wallet.open({
+    id: 'w10',
+    playerId: 'p10',
+    initialBalance: Money.from({ amount: '100.00', currency: 'BRL' }),
+    idGenerator: () => 'x',
+  });
+  wallet.debit(Money.from({ amount: '25.00', currency: 'BRL' }));
+  expect(wallet.balance.amountString).toBe('75.00');
+  expect(wallet.version).toBe(2);
+});
+
+test('credit increases the balance and increments the version', () => {
+  const { wallet } = Wallet.open({
+    id: 'w11',
+    playerId: 'p11',
+    initialBalance: Money.from({ amount: '100.00', currency: 'BRL' }),
+    idGenerator: () => 'x',
+  });
+  wallet.credit(Money.from({ amount: '15.50', currency: 'BRL' }));
+  expect(wallet.balance.amountString).toBe('115.50');
+  expect(wallet.version).toBe(2);
+});
+
+test('debit that would go negative is rejected structurally', () => {
+  const { wallet } = Wallet.open({
+    id: 'w12',
+    playerId: 'p12',
+    initialBalance: Money.from({ amount: '10.00', currency: 'BRL' }),
+    idGenerator: () => 'x',
+  });
+  expect(() => wallet.debit(Money.from({ amount: '10.01', currency: 'BRL' })))
+    .toThrow(/would make the balance negative/);
+  expect(wallet.balance.amountString).toBe('10.00');
+  expect(wallet.version).toBe(1);
+});
+
+test('movement with a divergent currency is rejected', () => {
+  const { wallet } = Wallet.open({
+    id: 'w13',
+    playerId: 'p13',
+    initialBalance: Money.from({ amount: '10.00', currency: 'BRL' }),
+    idGenerator: () => 'x',
+  });
+  expect(() => wallet.debit(Money.from({ amount: '1.00', currency: 'USD' })))
+    .toThrow(/currency mismatch/i);
+  expect(() => wallet.credit(Money.from({ amount: '1.00', currency: 'USD' })))
+    .toThrow(/currency mismatch/i);
+});
+
+test('non-positive movement amounts are rejected', () => {
+  const { wallet } = Wallet.open({
+    id: 'w14',
+    playerId: 'p14',
+    initialBalance: Money.from({ amount: '10.00', currency: 'BRL' }),
+    idGenerator: () => 'x',
+  });
+  expect(() => wallet.debit(Money.zero('BRL'))).toThrow(/must be positive/);
+  expect(() => wallet.credit(Money.zero('BRL'))).toThrow(/must be positive/);
+});
+
+test('movement updates updatedAt', () => {
+  const { wallet } = Wallet.open({
+    id: 'w15',
+    playerId: 'p15',
+    initialBalance: Money.from({ amount: '10.00', currency: 'BRL' }),
+    idGenerator: () => 'x',
+  });
+  const before = wallet.updatedAt;
+  wallet.debit(Money.from({ amount: '1.00', currency: 'BRL' }));
+  expect(wallet.updatedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+});

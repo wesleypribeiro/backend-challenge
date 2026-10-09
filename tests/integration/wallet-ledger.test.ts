@@ -67,7 +67,7 @@ test('entity metadata maps wallet and ledger to the wagering schema with domain-
   expect(ledger.properties.direction!.fieldNames).toEqual(['direction']);
 });
 
-test('positive opening persists wallet and OPENING CREDIT ledger entry atomically', async () => {
+test('positive opening persists wallet, OPENING CREDIT ledger entry and OPENING transaction atomically', async () => {
   const em = orm.em.fork();
   const { walletId, playerId, entryId, transactionId } = ids();
   let call = 0;
@@ -83,6 +83,20 @@ test('positive opening persists wallet and OPENING CREDIT ledger entry atomicall
     id: entryId, wallet_id: walletId, transaction_id: transactionId,
     operation: 'OPENING', direction: 'CREDIT', amount: '1000.00', currency: 'BRL',
     balance_before: '0.00', balance_after: '1000.00',
+  }]);
+
+  // The ledger transaction_id always references a real OPENING transaction
+  // row committed in the same flush (F1 D10 handoff).
+  const transactionRows = (await infra.query('app',
+    `select provider_id, external_transaction_id, idempotency_key, kind, status,
+            money_amount, money_currency, result_balance, processed_at is not null as has_processed_at
+     from wagering.wager_transaction where id = $1`, [transactionId])).rows;
+  expect(transactionRows).toEqual([{
+    provider_id: 'internal', external_transaction_id: `opening-${walletId}`,
+    idempotency_key: `internal:opening-${walletId}`,
+    kind: 'OPENING', status: 'PROCESSED',
+    money_amount: '1000.00', money_currency: 'BRL', result_balance: '1000.00',
+    has_processed_at: true,
   }]);
 });
 
@@ -225,8 +239,21 @@ test('saveOpen refuses mismatched wallet/ledger opening pairs before scheduling 
       balanceBefore: Money.from({ amount: '5.00', currency: 'BRL' }),
       balanceAfter: Money.from({ amount: '30.00', currency: 'BRL' }) },
     /must start from a zero balance, got 5\.00/],
+    // Wrong ending balance: with before 0.00 and amount 25.00, an after of
+    // 24.00 is exactly an arithmetic violation (0.00 + 25.00 !== 24.00).
     [{ ...valid, balanceAfter: Money.from({ amount: '24.00', currency: 'BRL' }) },
-    /does not match wallet balance 25\.00/],
+    /arithmetic is not balanced/],
+    // Arithmetic is checked before persistence: 5.00 + 10.00 !== 25.00.
+    [{ ...valid,
+      balanceBefore: Money.from({ amount: '5.00', currency: 'BRL' }),
+      amount: Money.from({ amount: '10.00', currency: 'BRL' }) },
+    /arithmetic is not balanced/],
+    // Balanced (5.00 + 20.00 = 25.00) but the entry moves the wrong amount
+    // for a 25.00 wallet opening.
+    [{ ...valid,
+      balanceBefore: Money.from({ amount: '5.00', currency: 'BRL' }),
+      amount: Money.from({ amount: '20.00', currency: 'BRL' }) },
+    /amount 20\.00 does not match wallet balance 25\.00/],
   ];
   for (const [state, matcher] of mismatches) {
     await expect(new WalletRepository(orm.em.fork()).saveOpen(wallet, WalletLedgerEntry.rehydrate(state)))
@@ -283,12 +310,17 @@ test('ledger rejects rows whose currency diverges from the wallet currency (comp
   const { wallet, ledgerEntry } = openWallet(walletId, playerId, '40.00');
   await new WalletRepository(orm.em.fork()).saveOpen(wallet, ledgerEntry);
 
-  // Every row-level check passes; only the composite (wallet_id, currency)
-  // key diverges from the wallet's (id, currency).
+  // Use a real transaction id from another wallet so the transaction FK and
+  // the (wallet_id, transaction_id) unique both stay satisfied — only the
+  // composite (wallet_id, currency) key diverges and cannot be masked.
+  const other = openWallet(crypto.randomUUID(), crypto.randomUUID(), '5.00');
+  await new WalletRepository(orm.em.fork()).saveOpen(other.wallet, other.ledgerEntry);
+  const [{ transaction_id: foreignTransactionId }] = (await infra.query('app',
+    'select transaction_id from wagering.wallet_ledger_entry where wallet_id = $1', [other.wallet.id])).rows;
   await expect(infra.query('app', `insert into wagering.wallet_ledger_entry
     (id, wallet_id, transaction_id, operation, direction, amount, currency, balance_before, balance_after)
     values ($1, $2, $3, 'OPENING', 'CREDIT', '10.00', $4, '0.00', '10.00')`,
-    [crypto.randomUUID(), walletId, crypto.randomUUID(), 'USD']))
+    [crypto.randomUUID(), walletId, foreignTransactionId, 'USD']))
     .rejects.toThrow(/violates foreign key constraint "wallet_ledger_entry_wallet_currency_fk"/);
 
   const diverged = (await infra.query('app',
@@ -302,13 +334,31 @@ test('ledger rejects rows whose currency diverges from the wallet currency (comp
     from pg_constraint c
     join unnest(c.conkey) with ordinality as key(attnum, ord) on true
     join pg_attribute a on a.attrelid = c.conrelid and a.attnum = key.attnum
-    where c.conname in ('wallet_id_currency_unique', 'wallet_ledger_entry_wallet_currency_fk')
+    where c.conname in ('wallet_id_currency_unique', 'wallet_ledger_entry_wallet_currency_fk', 'wallet_ledger_entry_transaction_fk')
     group by c.conname, c.contype, c.condeferrable, c.condeferred
     order by c.conname`)).rows;
   expect(constraints).toEqual([
     { conname: 'wallet_id_currency_unique', contype: 'u', condeferrable: false, condeferred: false, columns: '{id,currency}' },
+    { conname: 'wallet_ledger_entry_transaction_fk', contype: 'f', condeferrable: true, condeferred: true, columns: '{transaction_id}' },
     { conname: 'wallet_ledger_entry_wallet_currency_fk', contype: 'f', condeferrable: true, condeferred: true, columns: '{wallet_id,currency}' },
   ]);
+});
+
+test('ledger rejects rows referencing a missing transaction (deferred transaction FK)', async () => {
+  const { walletId, playerId } = ids();
+  const { wallet, ledgerEntry } = openWallet(walletId, playerId, '40.00');
+  await new WalletRepository(orm.em.fork()).saveOpen(wallet, ledgerEntry);
+
+  // Every row-level check and the wallet composite key pass; only the
+  // transaction_id FK to wager_transaction diverges.
+  await expect(infra.query('app', insertLedgerSql,
+    [crypto.randomUUID(), walletId, crypto.randomUUID(), 'BET', 'DEBIT', '10.00', '40.00', '30.00']))
+    .rejects.toThrow(/violates foreign key constraint "wallet_ledger_entry_transaction_fk"/);
+
+  const orphans = (await infra.query('app', `
+    select count(*)::int as count from wagering.wallet_ledger_entry l
+    where not exists (select 1 from wagering.wager_transaction t where t.id = l.transaction_id)`)).rows;
+  expect(orphans).toEqual([{ count: 0 }]);
 });
 
 test('ledger table rejects UPDATE, DELETE and TRUNCATE via grants (app) and triggers (all roles)', async () => {

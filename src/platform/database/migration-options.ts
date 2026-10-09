@@ -4,6 +4,7 @@ import type { ConfigurationByRole } from '../config/configuration.js';
 import { ormOptions } from './orm-options.js';
 import { Migration20261009000100 } from './migrations/Migration20261009000100.js';
 import { Migration20261009000200 } from './migrations/Migration20261009000200.js';
+import { Migration20261009000300 } from './migrations/Migration20261009000300.js';
 
 export function migrationOptions(config: ConfigurationByRole['migrator']) {
   return {
@@ -15,6 +16,7 @@ export function migrationOptions(config: ConfigurationByRole['migrator']) {
       migrationsList: [
         { name: migrationNames[0], class: Migration20261009000100 },
         { name: migrationNames[1], class: Migration20261009000200 },
+        { name: migrationNames[2], class: Migration20261009000300 },
       ],
       transactional: true,
       allOrNothing: true,

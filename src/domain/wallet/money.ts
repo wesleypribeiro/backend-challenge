@@ -5,8 +5,33 @@ export interface MoneyProps {
   currency: string;
 }
 
-const ISO_4217 = /^[A-Z]{3}$/;
 const DECIMAL_STRING = /^-?\d+(\.\d{1,2})?$/;
+/**
+ * Active ISO 4217 alphabetic currency codes, excluding the "no currency"
+ * (XXX), testing (XTS) and precious-metal/instrument placeholders — `Intl`
+ * alone accepts fictional codes such as ZZZ/XXX, which the contract forbids.
+ * Multi-currency stays supported: every real fiat code (BRL, USD, EUR, JPY…)
+ * is accepted.
+ */
+const ISO_4217_CURRENCIES = new Set<string>([
+  'AED', 'AFN', 'ALL', 'AMD', 'ANG', 'AOA', 'ARS', 'AUD', 'AWG', 'AZN',
+  'BAM', 'BBD', 'BDT', 'BGN', 'BHD', 'BIF', 'BMD', 'BND', 'BOB', 'BOV',
+  'BRL', 'BSD', 'BTN', 'BWP', 'BYN', 'BZD', 'CAD', 'CDF', 'CHE', 'CHF',
+  'CHW', 'CLF', 'CLP', 'COU', 'CRC', 'CUP', 'CVC', 'CZK', 'DJF', 'DKK',
+  'DOP', 'DZD', 'EGP', 'ERN', 'ETB', 'EUR', 'FJD', 'FKP', 'GBP', 'GEL',
+  'GHS', 'GIP', 'GMD', 'GNF', 'GTQ', 'GYD', 'HKD', 'HNL', 'HTG', 'HUF',
+  'IDR', 'ILS', 'INR', 'IQD', 'IRR', 'ISK', 'JMD', 'JOD', 'JPY', 'KES',
+  'KGS', 'KHR', 'KMF', 'KPW', 'KRW', 'KWD', 'KYD', 'KZT', 'LAK', 'LBP',
+  'LKR', 'LRD', 'LSL', 'LYD', 'MAD', 'MDL', 'MGA', 'MKD', 'MMK', 'MNT',
+  'MOP', 'MRU', 'MUR', 'MVR', 'MWK', 'MXN', 'MXV', 'MYR', 'MZN', 'NAD',
+  'NGN', 'NIO', 'NOK', 'NPR', 'NZD', 'OMR', 'PAB', 'PEN', 'PGK', 'PHP',
+  'PKR', 'PLN', 'PYG', 'QAR', 'RON', 'RSD', 'RUB', 'RWF', 'SAR', 'SBD',
+  'SCR', 'SDG', 'SEK', 'SGD', 'SHP', 'SLE', 'SOS', 'SRD', 'SSP', 'STN',
+  'SVC', 'SYP', 'SZL', 'THB', 'TJS', 'TMT', 'TND', 'TOP', 'TRY', 'TTD',
+  'TWD', 'TZS', 'UAH', 'UGX', 'USD', 'USN', 'UYI', 'UYU', 'UYW', 'UZS',
+  'VED', 'VES', 'VND', 'VUV', 'WST', 'XAF', 'XCD', 'XOF', 'XPF', 'YER',
+  'ZAR', 'ZMW', 'ZWG', 'ZWL',
+]);
 /** NUMERIC(20,2) upper bound — mirrors the persistence column so the domain
  * rejects overflow before the database would round or fail. */
 const NUMERIC_20_2_MAX = new Decimal('999999999999999999.99');
@@ -27,7 +52,7 @@ export class Money {
 
   static from(props: MoneyProps): Money {
     const { amount, currency } = props;
-    if (typeof currency !== 'string' || !ISO_4217.test(currency)) {
+    if (typeof currency !== 'string' || !ISO_4217_CURRENCIES.has(currency)) {
       throw new Error(`Invalid ISO 4217 currency code: ${currency}`);
     }
     if (typeof amount !== 'string' || !DECIMAL_STRING.test(amount)) {

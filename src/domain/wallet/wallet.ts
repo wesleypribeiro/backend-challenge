@@ -81,4 +81,42 @@ export class Wallet {
   get updatedAt(): Date {
     return this._updatedAt;
   }
+
+  /**
+   * Debit the balance (BET, ROLLBACK-of-credit). Currency must match and the
+   * result must stay non-negative — the use case checks availability first and
+   * rejects with INSUFFICIENT_FUNDS; this guard is a structural backstop.
+   * Increments the version: the domain owns version transitions (D7).
+   */
+  debit(money: Money): void {
+    this.assertMovementCurrency(money);
+    const next = this._balance.subtract(money);
+    if (next.isNegative()) {
+      throw new Error(
+        `Wallet debit would make the balance negative: ${this._balance.amountString} - ${money.amountString}`,
+      );
+    }
+    this.applyMovement(next);
+  }
+
+  /** Credit the balance (WIN, REFUND, ROLLBACK-of-debit). Increments version. */
+  credit(money: Money): void {
+    this.assertMovementCurrency(money);
+    this.applyMovement(this._balance.add(money));
+  }
+
+  private assertMovementCurrency(money: Money): void {
+    if (money.currency !== this.currency) {
+      throw new Error(`Wallet currency mismatch: wallet=${this.currency}, movement=${money.currency}`);
+    }
+    if (!money.isPositive()) {
+      throw new Error(`Wallet movement amount must be positive, got ${money.amountString}`);
+    }
+  }
+
+  private applyMovement(next: Money): void {
+    this._balance = next;
+    this._version += 1;
+    this._updatedAt = new Date();
+  }
 }

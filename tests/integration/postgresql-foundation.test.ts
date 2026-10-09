@@ -17,7 +17,7 @@ const { WorkerDatabaseContext } = await compiled<typeof import('../../src/platfo
 const { JsonLogger } = await compiled<typeof import('../../src/platform/logging/json-logger.js')>('dist/platform/logging/json-logger.js');
 const { DatabaseController } = await compiled<typeof import('../fixtures/database-controller.js')>('.test-dist/database-controller.js');
 const quiet = (role: 'api' | 'worker') => new JsonLogger(role, () => {});
-const migrationNames = ['Migration20261009000100', 'Migration20261009000200'] as const;
+const migrationNames = ['Migration20261009000100', 'Migration20261009000200', 'Migration20261009000300'] as const;
 async function barrier(promise: Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -66,8 +66,8 @@ test('compiled migration cycle up/up/down/up preserves history, refuses nonempty
   expect(runMigration(infra, 'migrate').code).toBe(0);
   expect((await infra.query('app', 'select * from public.mikro_orm_migrations')).rows).toEqual(first);
   expect(status()).toMatchObject({ executed: [...migrationNames], pending: [] });
-  expect((await infra.query('app', "select table_name from information_schema.tables where table_schema = 'wagering' order by table_name")).rows)
-    .toEqual([{ table_name: 'wallet' }, { table_name: 'wallet_ledger_entry' }]);
+  expect((await infra.query('app', "select table_name from information_schema.tables where table_schema = 'wagering' order by table_name collate \"C\"")).rows)
+    .toEqual([{ table_name: 'outbox_event' }, { table_name: 'wager_transaction' }, { table_name: 'wallet' }, { table_name: 'wallet_ledger_entry' }]);
   expect((await infra.query('app', "select pg_get_userbyid(nspowner) as owner, has_schema_privilege(current_user, 'wagering', 'USAGE') as usage, has_schema_privilege(current_user, 'wagering', 'CREATE') as create from pg_namespace where nspname = 'wagering'")).rows)
     .toEqual([{ owner: 'wagering_migrator', usage: true, create: false }]);
   for (const sql of [
@@ -79,7 +79,13 @@ test('compiled migration cycle up/up/down/up preserves history, refuses nonempty
   ]) await expect(infra.query('app', sql)).rejects.toMatchObject({ code: '42501' });
 
   expect(runMigration(infra, 'rollback').code).toBe(0);
-  expect(status()).toMatchObject({ executed: [migrationNames[0]], pending: [migrationNames[1]] });
+  expect(status()).toMatchObject({ executed: [migrationNames[0], migrationNames[1]], pending: [migrationNames[2]] });
+  expect((await infra.query('app', "select to_regclass('wagering.wager_transaction')::text as tx, to_regclass('wagering.wallet')::text as wallet")).rows)
+    .toEqual([{ tx: null, wallet: 'wagering.wallet' }]);
+  expect(runMigration(infra, 'rollback').code).toBe(0);
+  expect(status()).toMatchObject({ executed: [migrationNames[0]], pending: [migrationNames[1], migrationNames[2]] });
+  expect((await infra.query('app', "select to_regclass('wagering.wallet')::text as wallet")).rows)
+    .toEqual([{ wallet: null }]);
   expect(runMigration(infra, 'rollback').code).toBe(0);
   expect(status()).toMatchObject({ executed: [], pending: [...migrationNames] });
   expect((await infra.query('app', "select to_regnamespace('wagering') as schema")).rows).toEqual([{ schema: null }]);
@@ -89,6 +95,7 @@ test('compiled migration cycle up/up/down/up preserves history, refuses nonempty
 
   await infra.query('migrator', 'create table wagering.extra_object (id integer); insert into wagering.extra_object values (42)');
   await expect(infra.query('app', 'drop table wagering.extra_object')).rejects.toMatchObject({ code: '42501' });
+  expect(runMigration(infra, 'rollback').code).toBe(0);
   expect(runMigration(infra, 'rollback').code).toBe(0);
   const refused = runMigration(infra, 'rollback');
   expect(refused.code).toBe(1);

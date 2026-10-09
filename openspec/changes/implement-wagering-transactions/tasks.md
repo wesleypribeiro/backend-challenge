@@ -1,0 +1,27 @@
+# Tasks
+
+## 1. Domain
+
+- [x] 1.1 Implement `FailureCode` taxonomy and `WagerTransaction` entity (`src/domain/wagering/wager-transaction.ts`): state machine (`PENDING` → `PROCESSED`/`REJECTED`/`PENDING_REFERENCE`/`FAILED`, terminal transitions raise), kind/status enums, reference requirements by kind (`OPENING` internal, REFUND/ROLLBACK require reference, BET/WIN/LOSS forbid it), `affectsBalance`, `requiresReference`, `matchesPayload`, `ledgerDirectionFor`. Verify unit tests (`tests/unit/domain/wagering/wager-transaction.test.ts`): valid/rejected creations, terminal transitions, kind rules, direction resolution, immutability of terminal state.
+- [x] 1.2 Implement canonical payload-hash computation (sorted-key JSON of business fields, SHA-256) and verify unit tests: identical payloads → same hash, field-order independence, transport/metadata fields excluded, divergent amount/currency/reference → different hash.
+- [x] 1.3 Add `Wallet.debit`/`Wallet.credit` domain methods (version increment, negative-result rejection) and verify unit tests covering balance/version invariants.
+- [x] 1.4 Implement `IntegrationEvent` abstract class and concrete events (`WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference`) with `toJSON()` envelope. Verify unit tests: envelope shape, `MoneyProps` as decimal strings, eventType/version on the class.
+
+## 2. Persistence
+
+- [x] 2.1 Create `Migration20261009000300`: `wager_transaction` table (checks, uniques on provider+external and idempotency_key, self-FK, deferred wallet FK), `outbox_event` table, deferred FK `wallet_ledger_entry.transaction_id → wager_transaction(id)`, partial unique `(reference_transaction_id, kind) WHERE status='PROCESSED'`. Verify migration cycle up/down/up in disposable environments (`tests/integration/` migration test + docker cycle); no persistent environment exists (verified — no named volume, no containers), so no incremental strategy is required.
+- [x] 2.2 Add MikroORM `EntitySchema` mappings for `WagerTransaction` and `OutboxMessage` (`src/platform/database/schemas.ts`), register in `orm-options.ts`. Verify metadata compilation and column mapping in integration tests.
+- [x] 2.3 Extend `WalletRepository.saveOpen` to insert the internal `OPENING` `WagerTransaction` row (provider `internal`, external `opening-{walletId}`, key `internal:opening-{walletId}`, status `PROCESSED`) in the same flush as wallet + entry. Update F1 integration tests that reference `transaction_id` via direct SQL to use the real transaction row. Verify: opening commits all three together; rollback leaves none; ledger always references a real transaction.
+
+## 3. Processing Use Case
+
+- [x] 3.1 Implement `ProcessWagerTransaction` skeleton: begin transaction, lock wallet `FOR UPDATE`, pre-lock idempotency lookup (key + provider/external), post-lock re-lookup, payload-hash conflict detection, `23505` recovery (rollback → fresh context → re-read). Verify unit tests with fakes for lookup/conflict/recovery branches; verify integration: replay after restart, concurrent same-key recovery, divergent-payload conflict (no new row, no event).
+- [x] 3.2 Implement BET/WIN/LOSS processing (validation order: wallet existence → player → currency → amount → balance for BET; apply via `Wallet.debit`/`credit`; single flush with transaction + ledger + outbox; LOSS skips ledger and balance). Verify unit tests for rules and integration tests for success/insufficient-funds/currency/player mismatch and LOSS without ledger.
+- [x] 3.3 Implement REFUND/ROLLBACK: resolve reference by `(providerId, referenceExternalTransactionId)`, scope checks (provider/player/wallet/currency/round/amount), kind rules, direction inversion, duplicate-reversal constraint, `ROLLBACK_INSUFFICIENT_FUNDS`, missing reference → `PENDING_REFERENCE` (no balance, no ledger). Verify unit and integration tests including pending-reference persistence and partial-unique enforcement.
+- [x] 3.4 Persist per-outcome outbox events in the same flush (Processed/Rejected/BalanceChanged/PendingReference); no events for conflict/replay; rows remain `PENDING`. Verify integration tests asserting event set per outcome and atomic rollback with outbox.
+
+## 4. Concurrency & Invariants
+
+- [x] 4.1 Implement real-PostgreSQL concurrency tests: 50x same bet in parallel → one PROCESSED, one debit; mandatory 80/80 vs 100 scenario (one PROCESSED, one REJECTED `INSUFFICIENT_FUNDS`, balance 20.00, one DEBIT); distinct wallets proceed while one is locked (observable lock wait via `pg_stat_activity`, no sleeps as proof). Verify all pass under real parallelism.
+- [x] 4.2 Add the reconstruction invariant assertion (`wallet.balance == saldo reconstruído pelo ledger`) as a shared helper and apply it to every scenario with a persisted wallet. Verify it passes in all financial tests.
+- [x] 4.3 Validate the full change: `typecheck`, `build`, `test:unit`, `test:integration`, docker-affected suites, `openspec validate implement-wagering-transactions --type change --strict --no-interactive`. Record evidence in `implementation-notes.md`.
