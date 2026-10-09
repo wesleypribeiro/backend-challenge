@@ -1,6 +1,6 @@
-# Infraestrutura local — lote P0 2.3–2.5
+# Infraestrutura local — P0 2.3–3.4
 
-Este lote disponibiliza somente PostgreSQL e SQS via LocalStack. API, workers, migrations e provisionamento das filas de negócio ainda não fazem parte do Compose. Não há tabelas financeiras ou schema `wagering` criado pelo bootstrap.
+O Compose disponibiliza PostgreSQL e SQS via LocalStack. API, workers, jobs de migrations e provisionamento das filas de negócio ainda não fazem parte do Compose. A aplicação já integra MikroORM e possui runner de migrations separado. Não há tabelas financeiras nem schema `wagering` criado pelo bootstrap do container; esse schema pertence à migration técnica.
 
 ## Pré-requisitos e imagens
 
@@ -69,10 +69,33 @@ Setup aguarda healthchecks e comprova `SELECT 1` e `ListQueues` pelo host. Clean
 
 Os testes criam somente fixtures técnicas em databases/filas descartáveis. Verificam autenticação por senha, privilégios, reexecução do bootstrap sem perda de dados, isolamento e limpeza após erro controlado. Não recebem mensagens e não implementam as filas financeiras principal/DLQ. Falta de Docker ou das variáveis obrigatórias do arquivo de teste falha explicitamente, sem mocks ou skip.
 
+A suite também executa as migrations compiladas, isolamento de contextos HTTP/worker, rollback transacional e round-trip de `NUMERIC(20,2)` como string. `DOCKER_CONTEXT=default bun run test:docker` repete as migrations com a imagem final e PostgreSQL descartável, além do smoke existente. As fixtures ficam exclusivamente em `tests/fixtures`; o runtime não as inclui.
+
+## MikroORM e migrations compiladas
+
+API/worker usam `DATABASE_URL` com `wagering_app`; seu startup não modifica schema nem exige conexão bem-sucedida. MikroORM 7 abre conexões sob demanda, com pool/timeouts definidos em `.env.example` e `allowGlobalContext: false`. HTTP usa o RequestContext do adapter NestJS; cada execução futura de worker deverá usar `WorkerDatabaseContext.run`, que cria fork e limpa o identity map em `finally`. O callback aguarda todo o trabalho; não retornar promises de tarefas desacopladas nem reutilizar entidades/EntityManager entre execuções. Transações pertencem ao use case e usam `em.transactional()`, propagando o EM transacional aos adapters. Não há consumer criado por esse helper.
+
+O runner só lê `MIGRATION_DATABASE_URL`, validada para `wagering_migrator`, sem exigir SQS/HTTP. A URL validada também fornece explicitamente host/porta/database/usuário/senha ao ORM, impedindo que variáveis `MIKRO_ORM_*` substituam esses campos. API/worker rejeitam `MIGRATION_DATABASE_URL` e nunca recebem a credencial migrator. Executar **um migrator por vez** até 6.1; ainda não existe advisory lock.
+
+Após `bun install --frozen-lockfile` e `bun run build`, exemplo local com credencial fictícia:
+
+```bash
+NODE_ENV=development MIGRATION_DATABASE_URL='postgresql://wagering_migrator:local_migrator_password@localhost:5432/wagering' bun --no-env-file run db:status
+NODE_ENV=development MIGRATION_DATABASE_URL='postgresql://wagering_migrator:local_migrator_password@localhost:5432/wagering' bun --no-env-file run db:migrate
+```
+
+Para credenciais próprias, fornecer variáveis somente ao processo migrator ou usar env-file ignorado exclusivo. Não colocar a credencial no `.env` de API/worker. Os comandos não compilam implicitamente: executar o build após mudar migrations. Na imagem, `bun run db:status`, `bun run db:migrate` e `bun run db:rollback` usam os mesmos `.js`; fornecer o ambiente migrator ao container e conectar à rede do PostgreSQL, usando `postgres:5432`. Não montar fontes. Os testes automatizados mostram essa execução completa em `tests/docker/migrations.test.ts`.
+
+`db:status` retorna JSON com `executed`/`pending`; em database novo, o MikroORM prepara a tabela de histórico. Esse comando administrativo **não é** o futuro check read-only da readiness, que usará SELECT sob o papel app. `db:migrate` aplica pendências transacionalmente e sua repetição não reaplica passos concluídos. `db:rollback` desfaz **uma** migration por invocação; a migration inicial só remove o schema vazio, usando `RESTRICT`. Objetos adicionais fazem o comando falhar, preservando schema, objeto e histórico. O histórico `public.mikro_orm_migrations` e o SELECT de `wagering_app` permanecem após rollback. Erros retornam exit code 1 e diagnóstico JSON sem URL/senha.
+
+O ciclo destrutivo `up → up → down → up` é automatizado apenas em databases descartáveis. Não executar a suite contra desenvolvimento nem reverter suas migrations para testar. Migrations financeiras futuras precisam de estratégia e testes próprios de preservação de dados. Esta migration não concede DML genérico sobre futuras tabelas.
+
+Os patches de declarações usados com as versões fixadas estão documentados em [patches/README.md](../patches/README.md). Instalação congelada e estágios Docker aplicam os mesmos patches; não alteram JavaScript das dependências.
+
 Uma interrupção não capturável (`SIGKILL`, falha do daemon/host) pode impedir `finally`; o projeto é anunciado no início e seus recursos têm labels para diagnóstico. Recuperação de resíduos após essas falhas, cleanup adversarial e execução completa P0/P1 pertencem a 9.1. Não executar simultaneamente suites do repositório que compartilhem `dist/` e `.test-dist/`; os ambientes de serviços do harness são independentes.
 
 ## Continuidade
 
-`.dockerignore` já permite todas as fontes TypeScript sob `src/`, incluindo migrations futuras; scripts usados pela imagem devem entrar por caminhos explícitos quando forem criados. O script de bootstrap PostgreSQL é um bind mount read-only do Compose e não deve ser copiado à imagem da API/worker.
+`.dockerignore` permite as fontes TypeScript sob `src/`, incluindo o runner e migrations, e os patches necessários à instalação. A imagem final contém somente `dist/`, dependências de produção e manifest. O script de bootstrap PostgreSQL é um bind mount read-only do Compose e não deve ser copiado à imagem da API/worker.
 
 Logs financeiros serão ampliados nas changes F1–F6, com eventos estruturados e `messageId`, `transactionId`, `walletId`, `providerId` quando existirem, preservando correlação e proteção contra payloads/segredos. Não criar IDs fictícios, métricas financeiras ou logging de negócio neste lote. A matriz S13 continua pendente.

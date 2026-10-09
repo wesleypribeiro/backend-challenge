@@ -4,7 +4,7 @@ P0 libera o início do domínio financeiro após evidências reais; P1 completa 
 
 O checklist registra somente tarefas com evidências de implementação. Manter a change aberta após este lote e após P0 enquanto houver pendências P1. As decisões D1–D10 e a matriz S13/F1–F7 em `design.md` continuam sendo referência.
 
-Evidências dos três lotes em [implementation-notes.md](implementation-notes.md). O lote 2.3–2.5 acrescenta Compose, PostgreSQL/LocalStack reais, papéis separados e harness isolado, com acesso e permissões testados em containers. Integração da aplicação com os clientes, migrations, filas de negócio e health continuam pendentes.
+Evidências dos quatro lotes em [implementation-notes.md](implementation-notes.md). O lote 3.1–3.4 acrescenta integração MikroORM, contextos HTTP/worker isolados, runner/migration técnica compilados e persistência testada em PostgreSQL real, incluindo a imagem Docker. Cliente/filas SQS da aplicação, health e demais tarefas P0/P1 continuam pendentes. A recusa de `down` com objetos adicionais foi antecipada por solicitação explícita; 6.2 permanece pendente para completar a prova de falha após DDL.
 
 ## 1. P0 — Build compilado e processos sob Bun
 
@@ -24,10 +24,10 @@ Evidências dos três lotes em [implementation-notes.md](implementation-notes.md
 
 ## 3. P0 — MikroORM e migrations reversíveis
 
-- [ ] 3.1 Integrar MikroORM/PostgreSQL com pool limitado, contexto HTTP e fork/contexto por job, sem identity map global; verificar conexão real e contextos independentes, sem schema synchronization ou migration automática no startup. Referência: `postgresql-foundation`, D5.
-- [ ] 3.2 Criar runner compilado e scripts `db:migrate`, `db:rollback`, `db:status`, com histórico em `public` e leitura para readiness; verificar execução via Bun na imagem final, sem fontes de migrations e sem credenciais migrator na API/worker. Executar um migrator por vez até 6.1. Referência: `postgresql-foundation`.
-- [ ] 3.3 Criar migration técnica versionada `up`/`down` do schema vazio `wagering` e permissões, sem entidades/tabelas financeiras ou `CASCADE`; verificar `up → up → down → up` em PostgreSQL real descartável, incluindo histórico/status e ausência de reaplicação indevida. Referência: `postgresql-foundation`.
-- [ ] 3.4 Adicionar integração básica de rollback SQL, dois contextos concorrentes isolados, privilégios e round-trip decimal; verificar ausência de escrita após rollback e retorno exato da string `"900719925474099.91"`, com fixtures somente em testes. Referência: `postgresql-foundation`, D5/D10.
+- [x] 3.1 Integrar MikroORM/PostgreSQL com pool limitado, contexto HTTP e fork/contexto por job, sem identity map global; verificar conexão real e contextos independentes, sem schema synchronization ou migration automática no startup. Referência: `postgresql-foundation`, D5.
+- [x] 3.2 Criar runner compilado e scripts `db:migrate`, `db:rollback`, `db:status`, com histórico em `public` e leitura para readiness; verificar execução via Bun na imagem final, sem fontes de migrations e sem credenciais migrator na API/worker. Executar um migrator por vez até 6.1. Referência: `postgresql-foundation`.
+- [x] 3.3 Criar migration técnica versionada `up`/`down` do schema vazio `wagering` e permissões, sem entidades/tabelas financeiras ou `CASCADE`; verificar `up → up → down → up` em PostgreSQL real descartável, incluindo histórico/status e ausência de reaplicação indevida. Referência: `postgresql-foundation`.
+- [x] 3.4 Adicionar integração básica de rollback SQL, dois contextos concorrentes isolados, privilégios e round-trip decimal; verificar ausência de escrita após rollback e retorno exato da string `"900719925474099.91"`, com fixtures somente em testes. Referência: `postgresql-foundation`, D5/D10.
 
 ## 4. P0 — SQS utilizável sem consumidor financeiro
 

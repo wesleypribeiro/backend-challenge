@@ -8,10 +8,10 @@ import { JsonLogger } from '../platform/logging/json-logger.js';
 import { httpLogging } from '../platform/logging/http-logging.js';
 
 export async function createApiApplication(
-  _config: ConfigurationByRole['api'] = loadConfiguration('api'),
+  config: ConfigurationByRole['api'] = loadConfiguration('api'),
   logger = new JsonLogger('api'),
 ): Promise<INestApplication> {
-  const app = await NestFactory.create(ApiModule.register(logger), { abortOnError: false, logger });
+  const app = await NestFactory.create(ApiModule.register(logger, config), { abortOnError: false, logger });
   app.use(httpLogging(logger));
   return app;
 }

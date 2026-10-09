@@ -1,0 +1,13 @@
+diff --git a/index.d.ts b/index.d.ts
+index cf2cca4befe117b5b6d5940c0ce9db84fa1c3d38..17aa486c764e0f5c0e166a6b754d7e01ad4e7082 100644
+--- a/index.d.ts
++++ b/index.d.ts
+@@ -78,7 +78,7 @@ declare namespace PostgresInterval {
+      * // PT1H2M3S
+      * ```
+      */
+-    toTemporalDuration(): Temporal.Duration;
++    toTemporalDuration(): unknown;
+   }
+ }
+ 

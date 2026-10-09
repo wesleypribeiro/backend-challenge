@@ -56,6 +56,9 @@ export class TestInfrastructure {
   get project(): string { return this.#project; }
   get postgresPort(): number { return this.#postgresPort; }
   get sqsEndpoint(): string { return this.#endpoint; }
+  databaseUrl(role: Role, internal = false): string {
+    return `postgresql://wagering_${role}:${passwords[role]}@${internal ? 'postgres:5432' : `127.0.0.1:${this.#postgresPort}`}/${this.databaseName}`;
+  }
   get sqs(): SQSClient {
     if (!this.#sqs) throw new Error('Infrastructure is not started');
     return this.#sqs;

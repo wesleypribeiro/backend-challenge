@@ -5,7 +5,7 @@ import { requestContext } from './request-context.js';
 
 type Level = 'info' | 'warn' | 'error' | 'debug' | 'fatal';
 type Event = 'process.starting' | 'process.started' | 'process.stopping' | 'process.stopped' |
-  'bootstrap.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
+  'bootstrap.failed' | 'migration.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
 interface Details {
   port?: number;
   runtime?: string;
@@ -44,7 +44,7 @@ export class JsonLogger implements LoggerService {
       if (details.error instanceof ConfigurationError) record.variables = details.error.variables;
       if (typeof details.error === 'object' && details.error !== null && 'code' in details.error) {
         const code = details.error.code;
-        if (typeof code === 'string' && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EADDRINUSE', 'ENOTFOUND', 'EACCES'].includes(code)) record.errorCode = code;
+        if (typeof code === 'string' && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EADDRINUSE', 'ENOTFOUND', 'EACCES', '28P01', '42501', '2BP01', '57014'].includes(code)) record.errorCode = code;
       }
     }
     this.sink(JSON.stringify(record), level);

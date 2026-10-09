@@ -3,6 +3,7 @@ WORKDIR /app
 
 FROM base AS dependencies
 COPY package.json bun.lock bunfig.toml .bun-version ./
+COPY patches ./patches
 RUN test "$(bun --version)" = "$(cat .bun-version)" \
     && bun install --frozen-lockfile
 
@@ -14,6 +15,7 @@ RUN bun run build && find dist -name '*.map' -delete
 
 FROM base AS production-dependencies
 COPY package.json bun.lock bunfig.toml ./
+COPY patches ./patches
 RUN bun install --frozen-lockfile --production
 
 FROM base AS runtime

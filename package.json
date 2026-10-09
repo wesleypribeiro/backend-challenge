@@ -8,13 +8,16 @@
     "bun": "1.4.2"
   },
   "scripts": {
+    "db:migrate": "bun --no-env-file dist/bootstrap/migrate.js up",
+    "db:rollback": "bun --no-env-file dist/bootstrap/migrate.js down",
+    "db:status": "bun --no-env-file dist/bootstrap/migrate.js status",
     "typecheck": "bun ./node_modules/typescript/bin/tsc --project tsconfig.json --noEmit",
     "build": "bun scripts/build.ts",
     "start:api": "bun dist/bootstrap/api.js",
     "start:worker": "bun dist/bootstrap/worker.js",
     "test": "bun test",
     "test:smoke": "bun test",
-    "test:docker": "bun test ./tests/docker/image.test.ts",
+    "test:docker": "bun test ./tests/docker",
     "test:integration": "bun test ./tests/integration"
   },
   "dependencies": {
@@ -34,5 +37,9 @@
     "@types/bun": "1.4.2",
     "@types/pg": "8.23.1",
     "typescript": "5.9.3"
+  },
+  "patchedDependencies": {
+    "@mikro-orm/core@7.2.4": "patches/@mikro-orm%2Fcore@7.2.4.patch",
+    "postgres-interval@4.1.0": "patches/postgres-interval@4.1.0.patch"
   }
 }

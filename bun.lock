@@ -24,6 +24,10 @@
       },
     },
   },
+  "patchedDependencies": {
+    "postgres-interval@4.1.0": "patches/postgres-interval@4.1.0.patch",
+    "@mikro-orm/core@7.2.4": "patches/@mikro-orm%2Fcore@7.2.4.patch",
+  },
   "packages": {
     "@aws-sdk/client-sqs": ["@aws-sdk/client-sqs@3.1148.0", "", { "dependencies": { "@aws-sdk/core": "^3.978.1", "@aws-sdk/credential-provider-node": "^3.972.84", "@aws-sdk/middleware-sdk-sqs": "^3.972.43", "@aws-sdk/types": "^3.974.6", "@smithy/core": "^3.35.0", "@smithy/fetch-http-handler": "^5.8.0", "@smithy/node-http-handler": "^4.12.1", "@smithy/types": "^4.19.0", "tslib": "^2.6.2" } }, "sha512-OONZlNBcM0vibulab3ptSLXdiERLmiiJmOOq2q7fRrr+J7fN5waqWliDvcmRAvIU3fqMUVf0bJY7tKo+zk69dA=="],
 

@@ -7,10 +7,10 @@ import type { ConfigurationByRole } from '../platform/config/configuration.js';
 import { JsonLogger } from '../platform/logging/json-logger.js';
 
 export async function createWorkerApplication(
-  _config: ConfigurationByRole['worker'] = loadConfiguration('worker'),
+  config: ConfigurationByRole['worker'] = loadConfiguration('worker'),
   logger = new JsonLogger('worker'),
 ): Promise<INestApplicationContext> {
-  return NestFactory.createApplicationContext(WorkerModule.register(logger), { abortOnError: false, logger });
+  return NestFactory.createApplicationContext(WorkerModule.register(logger, config), { abortOnError: false, logger });
 }
 
 if (import.meta.main) {

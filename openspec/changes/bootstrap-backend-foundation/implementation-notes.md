@@ -251,4 +251,76 @@ Problema encontrado: na primeira execução, `awslocal` retornou saída vazia pa
 
 Criados: `compose.yaml`, `compose.test.yaml`, `docker/postgres/10-bootstrap.sh`, `docker/README.md`, `tests/support/infrastructure.ts`, `tests/fixtures/postgresql-permissions.ts`, `tests/integration/local-infrastructure.test.ts`. Modificados: `.env.example`, `.dockerignore`, `package.json` (script `test:integration`), `tasks.md` e este registro. Removido: somente o ZIP redundante solicitado.
 
-Próximo lote recomendado: **3.1 → 3.2 → 3.3 → 3.4** — integração MikroORM, runner compilado, migration técnica reversível e testes SQL correspondentes. Nenhuma dessas tarefas foi iniciada. Permanecem pendentes filas de negócio, health, lifecycle completo, P1 e todos os testes financeiros da matriz S13.
+Ao término do terceiro lote, a recomendação foi **3.1 → 3.2 → 3.3 → 3.4**. Esse lote foi executado abaixo; filas de negócio, health, lifecycle completo, P1 e todos os testes financeiros da matriz S13 permanecem pendentes.
+
+## Quarto lote — P0 3.1, 3.2, 3.3 e 3.4
+
+Implementado na branch `develop`, sem commit, push ou PR. Somente esses quatro itens foram marcados, totalizando **14/34**, com **20 pendentes**. Proposal, design, seis specs, decisões de DDD/locking por wallet e separação de processos foram preservados. Nenhuma entidade, tabela, regra, endpoint ou consumer financeiro foi criado. Testes destrutivos operaram exclusivamente nos projetos/databases gerados pelo harness; o database de desenvolvimento não foi alvo.
+
+### Integração MikroORM — 3.1
+
+`DatabaseModule` utiliza `@mikro-orm/nestjs` e o driver PostgreSQL. MikroORM **7.2.4**, integração NestJS **7.1.0**, NestJS **12.1.2**, Bun **1.4.2** e TypeScript **5.9.3** continuam fixados; nenhuma dependência ou tecnologia nova foi instalada. As APIs efetivas foram conferidas nas declarações/JavaScript instalados e na documentação de [NestJS/MikroORM](https://mikro-orm.io/docs/usage-with-nestjs), [contextos](https://mikro-orm.io/docs/identity-map) e [migrations](https://mikro-orm.io/docs/migrations).
+
+- MikroORM 7 inicializa sem exigir conexão antecipada; não usar a opção antiga `connect: false`. API/worker continuam iniciáveis com dependência inacessível. Nenhum startup chama schema synchronization ou migrations. A lista de entidades é vazia nesta fundação.
+- HTTP usa o middleware RequestContext do adapter oficial. Worker expõe `WorkerDatabaseContext.run`, com novo fork por chamada e limpeza em `finally`; não agenda nem consome trabalho. Transações continuam a cargo do use case via `em.transactional()`. O callback deve aguardar todo o trabalho, sem reutilizar EM/entidades entre execuções.
+- `allowGlobalContext: false`, pool mínimo 0/máximo configurado (default 5). `driverOptions` no v7 recebe diretamente as opções do `pg.Pool`: `connectionTimeoutMillis`, `query_timeout` e `statement_timeout`. Não usar o formato antigo aninhado em `connection`.
+- Campos host/porta/database/usuário/senha são extraídos explicitamente da URL validada para impedir sobreposição por `MIKRO_ORM_*`. O teste injeta overrides conflitantes e comprova que a URL por papel prevalece. API/worker mantêm apenas `wagering_app` e rejeitam configuração migrator.
+- Logs livres do ORM/SQL são desabilitados para evitar valores sensíveis. O runner usa diagnóstico JSON seguro e códigos PostgreSQL selecionados; erros reais de autenticação (`28P01`) são distinguíveis de `ConfigurationError`, sem senha/URL. Health/readiness e logging financeiro continuam nas tarefas próprias.
+
+### Runner e migration técnica — 3.2–3.3
+
+Scripts `db:migrate`, `db:rollback` e `db:status` executam `dist/bootstrap/migrate.js` sob Bun. Exigem build anterior e ambiente dedicado com `MIGRATION_DATABASE_URL` de `wagering_migrator`; não exigem HTTP/SQS nem usam a URL app como fallback. A lista explícita importa `Migration20261009000100.js`, sem descoberta de fontes TypeScript. As APIs do v7 são `orm.migrator`, `getExecuted()` e `getPending()`.
+
+O runner comprova conexão ao database existente antes de preparar o migrator. `up`/`down` usam transações e `allOrNothing`; snapshots de geração são desabilitados. `db:rollback` desfaz um passo. **Ainda não há advisory lock: executar serialmente até 6.1.** O `db:status` administrativo pode inicializar o histórico em um database novo; a readiness futura fará SELECT read-only diretamente sob o papel app, sem chamar o migrator.
+
+A migration cria apenas `wagering`, de propriedade de `wagering_migrator`, revoga acesso genérico, concede USAGE a `wagering_app` e concede somente SELECT em `public.mikro_orm_migrations`. Não há grants genéricos de DML nem tabelas no schema `wagering`. O histórico é criado pelo mecanismo MikroORM em `public`. `down` usa `DROP SCHEMA wagering RESTRICT`; remover o schema remove suas ACLs, preservando histórico e SELECT para diagnóstico de pendências. Objeto adicional provoca falha transacional, sem remoção em cascata.
+
+O ciclo **up → up → down → up** foi executado no host e novamente na imagem final contra PostgreSQL descartável. Asserções conferem schema, proprietário, grants, status, histórico/id/data sem reaplicação no segundo up, histórico vazio mas ainda acessível após down e reaplicação. A recusa de down com tabela adicional preserva objeto/histórico e retorna não zero. Esse caso foi antecipado por solicitação explícita do usuário; **6.2 permanece pendente**, pois falta sua prova de falha deliberada após DDL. Nenhum outro item P1 foi marcado.
+
+### Persistência real — 3.4
+
+`tests/fixtures/persistence-record.ts` contém somente um `EntitySchema` técnico e DDL explícito, usado no database descartável. Sem schema sync e sem fixture distribuída no runtime. `technical_probe.record` recebe grants explícitos de DML; permissões de produção não foram ampliadas.
+
+- Dois jobs sobrepostos usam EMs/entidades/transações independentes, comprovados por referências de objetos e `pg_backend_pid()` distintos. Barreiras com deadline sincronizam o ponto após flush, sem sleeps como evidência.
+- Um job altera uma linha e insere outra, efetua flush e lança exceção. O outro observa somente o estado confirmado e confirma sua própria linha. SQL posterior comprova rollback de todas as escritas do primeiro e preservação do segundo commit.
+- O identity map do contexto com falha é limpo, RequestContext não escapa e a próxima execução recebe EM novo, lê estado limpo e consegue confirmar nova escrita.
+- Duas requisições HTTP reais usam controller técnico compilado em `.test-dist/`, injeção do EM e middleware do módulo de produção. Transações sobrepostas mantêm contextos/PIDs distintos. Nenhuma rota de teste entra em `src/` ou na imagem.
+- Coluna real `NUMERIC(20,2)` e `DecimalType('string')`: gravação via Unit of Work, leitura em outro contexto e consulta SQL retornam **`"900719925474099.91"` como string exata**, sem Number/parseFloat. Precisão/escala são conferidas no catálogo PostgreSQL.
+- SQL real nega CREATE/DROP no schema, DDL em `public`, INSERT/UPDATE/DELETE/TRUNCATE/DROP do histórico e `SET ROLE` ao app. O migrator cria/remove seus objetos; SELECT do histórico continua após rollback.
+- Pool real configurado com máximo 2, timeout de conexão 300 ms e `statement_timeout` 150 ms; `pg_sleep(3)` falha dentro do limite observado e uma consulta posterior funciona. Configuração inválida e conexão com senha inválida têm diagnósticos distintos.
+
+### Problemas encontrados e correções
+
+1. A primeira compilação que de fato importou os tipos completos do ORM revelou **TS2344** em `CleanTypeConfig` de MikroORM 7.2.4 com `exactOptionalPropertyTypes`, e **TS2503** em `postgres-interval` 4.1.0 por referência a `Temporal.Duration`, ausente no lib ES2022/TypeScript 5.9.3. Foram criados dois patches de declarações com `bun patch`, documentados em [patches/README.md](../../../patches/README.md). `CleanTypeConfig` preserva a restrição por interseção com `TypeConfig`; a API Temporal não utilizada retorna conservadoramente `unknown` até haver tipos adequados. Nenhum JavaScript das dependências foi alterado. Não foram desabilitados strict, exact optional properties ou checagem de `.d.ts`.
+2. O primeiro runner usava nomes de métodos da API anterior (`getMigrator`/`getExecutedMigrations`/`getPendingMigrations`), rejeitados pelo compilador. Foram substituídos pelas APIs v7 efetivas. Nessa iteração, Bun Test reportou **0 pass, 4 fail, 4 errors** porque o preload não compilou; não foi considerado sucesso. A comparação de referência de EMs com brands genéricos diferentes também foi ajustada para comparação booleana estrita, preservando a asserção e os tipos.
+3. `package.json`/`bun.lock` registram os patches, sem alterar versões/resoluções. Dockerfile copia os patches antes das instalações congeladas em ambos os estágios; `.dockerignore` os permite. Uma instalação **nova em diretório temporário**, sem node_modules, aplicou ambos com `--frozen-lockfile`, e conferiu conteúdo dos patches e lockfile inalterado. A imagem também instalou/buildou/executou com esses patches.
+4. O ambiente mantém contexto Docker funcional `default`; os comandos o selecionam explicitamente, sem trocar o contexto global. Não houve bloqueio de Docker, PostgreSQL ou LocalStack. Suites que compartilham `dist/`/`.test-dist/` foram executadas sequencialmente.
+
+### Comandos e evidências do quarto lote
+
+| Comando/verificação | Resultado real |
+|---|---|
+| `bun install --frozen-lockfile` em diretório temporário limpo com manifest/lock/patches | Exit 0; patches aplicados; lockfile inalterado; diretório removido |
+| `bun run typecheck` | Exit 0, sem relaxar TypeScript strict |
+| `bun run build` | Exit 0; runner e migration emitidos em JavaScript |
+| `bun test` | **51 pass, 0 fail, 215 asserções** |
+| `DOCKER_CONTEXT=default bun test ./tests/integration/postgresql-foundation.test.ts` | **6 pass, 0 fail, 83 asserções** na primeira execução real completa |
+| `DOCKER_CONTEXT=default bun run test:integration` | **9 pass, 0 fail, 139 asserções**; inclui regressão da infraestrutura existente |
+| `DOCKER_CONTEXT=default bun run test:docker` | **2 pass, 0 fail, 34 asserções**; API/worker e ciclo de migrations na imagem, com PostgreSQL real |
+| `db:status`, `db:migrate`, `db:rollback` no host e na imagem | Executados pelos testes com credenciais de teste exclusivas; casos válidos exit 0, down não vazio/credencial app exit não zero |
+| `openspec validate bootstrap-backend-foundation --type change --strict --no-interactive --json` (CLI 1.13.1) | Válida, zero issues, exit 0 |
+| `openspec instructions apply --change bootstrap-backend-foundation --json` | 14 concluídas, 20 pendentes; change ainda aberta |
+| Listagem de containers/redes/volumes por label `io.jungle.owner` após os testes | Sem recursos residuais |
+| `git diff --check`, `git diff --cached --check` e conferência do índice | Sem erros; `dist/`, `node_modules/`, `.test-dist/` e ambientes sensíveis consultados não estão versionados |
+
+A última execução sequencial com falha imediata (`set -e`) concluiu typecheck, build, smoke (**19,94 s**), integração (**67,31 s**) e Docker (**45,07 s**) com exit 0. As contagens acima correspondem a essa execução final; os seis testes PostgreSQL também haviam passado isoladamente antes dela.
+
+Os comandos que falham intencionalmente são asserções negativas aprovadas, não falhas da execução final. Nenhum teste financeiro foi executado ou marcado como satisfeito. As credenciais usadas nos testes são fictícias e os recursos são descartados pelo harness.
+
+### Arquivos e continuidade
+
+Criados: `src/platform/database/{orm-options,database.module,worker-database-context,migration-options}.ts`, `src/platform/database/migrations/Migration20261009000100.ts`, `src/bootstrap/migrate.ts`, `tests/support/{compiled,migrations}.ts`, `tests/fixtures/{persistence-record,database-controller}.ts`, `tests/integration/postgresql-foundation.test.ts`, `tests/docker/migrations.test.ts`, os dois `patches/*.patch` e `patches/README.md`.
+
+Modificados: `src/bootstrap/{api,worker}.ts`, `src/composition/{api,worker}.module.ts`, `src/platform/logging/json-logger.ts`, `tests/support/infrastructure.ts`, `tests/docker/image.test.ts`, `package.json`, `bun.lock`, `Dockerfile`, `.dockerignore`, `docker/README.md`, `tasks.md` e este registro. O enunciado `README.md`, Compose, bootstrap de papéis e specs não foram modificados.
+
+Próximo lote recomendado, **sem implementação nesta execução**: **4.1 → 4.2 → 4.3**, cliente SQS local, provisionamento FIFO/DLQ e ciclo técnico send/receive/delete. Depois vêm health/Compose integrado (5.x) e robustez P1. A change continua aberta; 6.1–6.3 e demais P1 não são dispensados pelos testes deste lote. O conjunto técnico não comprova locking financeiro, atomicidade wallet/ledger/inbox/outbox nem qualquer cenário financeiro S13.

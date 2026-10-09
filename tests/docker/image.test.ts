@@ -23,7 +23,7 @@ test('final Docker image boots compiled API and worker without sources or sensit
   const directory = await mkdtemp(join(tmpdir(), 'jungle-docker-'));
   const containers: string[] = [];
   try {
-    for (const path of ['Dockerfile', '.dockerignore', '.bun-version', 'package.json', 'bun.lock', 'bunfig.toml', 'tsconfig.json', 'tsconfig.build.json', 'scripts', 'src']) {
+    for (const path of ['Dockerfile', '.dockerignore', '.bun-version', 'package.json', 'bun.lock', 'bunfig.toml', 'tsconfig.json', 'tsconfig.build.json', 'scripts', 'src', 'patches']) {
       await cp(join(projectRoot, path), join(directory, path), { recursive: true });
     }
     for (const path of ['.env', '.env.production', 'credentials.pem', 'src/.env', 'src/private.key']) {
