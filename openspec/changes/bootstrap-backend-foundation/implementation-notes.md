@@ -323,4 +323,85 @@ Criados: `src/platform/database/{orm-options,database.module,worker-database-con
 
 Modificados: `src/bootstrap/{api,worker}.ts`, `src/composition/{api,worker}.module.ts`, `src/platform/logging/json-logger.ts`, `tests/support/infrastructure.ts`, `tests/docker/image.test.ts`, `package.json`, `bun.lock`, `Dockerfile`, `.dockerignore`, `docker/README.md`, `tasks.md` e este registro. O enunciado `README.md`, Compose, bootstrap de papéis e specs não foram modificados.
 
-Próximo lote recomendado, **sem implementação nesta execução**: **4.1 → 4.2 → 4.3**, cliente SQS local, provisionamento FIFO/DLQ e ciclo técnico send/receive/delete. Depois vêm health/Compose integrado (5.x) e robustez P1. A change continua aberta; 6.1–6.3 e demais P1 não são dispensados pelos testes deste lote. O conjunto técnico não comprova locking financeiro, atomicidade wallet/ledger/inbox/outbox nem qualquer cenário financeiro S13.
+Ao término do quarto lote, a recomendação foi **4.1 → 4.2 → 4.3**. Esse lote foi executado abaixo; health/Compose integrado (5.x) e robustez P1 permanecem pendentes. A change continua aberta; 6.1–6.3 e demais P1 não são dispensados pelos testes. O conjunto técnico não comprova locking financeiro, atomicidade wallet/ledger/inbox/outbox nem qualquer cenário financeiro S13.
+
+## Quinto lote — P0 4.1, 4.2 e 4.3
+
+Implementado exclusivamente este lote na branch `develop`, partindo do quarto lote aprovado e do workspace limpo. Nenhuma tarefa 5.x/P1 foi implementada ou marcada. Não houve commit, push ou PR. Arquitetura, proposal, design, seis specs, enunciado, dependências e lockfile foram preservados. O checklist passa a **17/34 concluídas**, com **17 pendentes**; a change continua aberta.
+
+### Cliente SQS — 4.1
+
+`SqsConnection` usa **AWS SDK v3 `@aws-sdk/client-sqs` 3.1148.0**, já fixado, e os dados de `loadConfiguration` por papel. Endpoint, região e credenciais são explícitos; o cliente não procura AWS_PROFILE nem credenciais da máquina. `useQueueUrlAsEndpoint: false` mantém o destino de rede no endpoint validado, e `GetQueueUrl`/`GetQueueAttributes` obtêm URLs/ARNs do serviço. Não há hostname, account ID, ARN ou URL de fila construídos no código de produção SQS.
+
+Retry `standard`, `maxAttempts` configurado (default 3, limite 5), timeout de conexão 1 s e `requestTimeout` configurado (default 25 s, maior que long poll de 20 s). Na versão instalada do handler, `throwOnRequestTimeout: true` é necessário para o prazo causar rejeição, em vez de apenas aviso. O provisionamento possui adicionalmente deadline total de 120 s, propagado por AbortSignal. Health terá orçamento próprio em 5.1, sem reutilizar esse prazo longo.
+
+`SqsModule` compõe API/worker via NestJS e fecha o cliente no lifecycle. Inicializar esses processos não acessa a rede SQS nem cria/recebe/confirma mensagens. No teste, ambos iniciam antes das filas existirem e o emulador continua vazio; os clientes injetados resolvem posteriormente as filas reais.
+
+O cliente foi comprovado pelo host e pela imagem final. O teste troca mensagens nos dois sentidos usando o mesmo LocalStack, com origins distintas para host/container e ARNs iguais obtidos por consulta. Configuração alternativa de `AWS_PROFILE`, `AWS_ENDPOINT_URL_SQS` e `AWS_MAX_ATTEMPTS` não sobrepõe os valores explícitos. O endpoint interno do Compose é fornecido como configuração do container de teste, não codificado no cliente.
+
+### Provisionamento separado — 4.2
+
+`bun run infra:provision` executa somente `dist/bootstrap/provision.js`, com build prévio e sem fontes TypeScript. O processo exige apenas as variáveis do papel `provision`, sem banco/HTTP ou credencial migrator. `.env.example` já contém os nomes/valores seguros necessários; comandos e limitações estão em [docker/README.md](../../../docker/README.md).
+
+O preflight consulta ambas as filas e rejeita incompatibilidades antes de modificar recursos existentes. Cria primeiro a DLQ, lê seu ARN e cria a principal com `RedrivePolicy`; depois lê o ARN da principal e completa `RedriveAllowPolicy` na DLQ. O contrato efetivamente consultado é:
+
+| Atributo | Principal | DLQ |
+|---|---|---|
+| Nome padrão de configuração | `wager-transactions.fifo` | `wager-transactions-dlq.fifo` |
+| FifoQueue | `true` | `true` |
+| ContentBasedDeduplication | `false` | `false` |
+| VisibilityTimeout | `60` | `60` |
+| ReceiveMessageWaitTimeSeconds | `20` | `20` |
+| MessageRetentionPeriod | `345600` | `1209600` |
+| RedrivePolicy | ARN real da DLQ, `maxReceiveCount=5` | Ausente |
+| RedriveAllowPolicy | Não exigida | `byQueue`, somente ARN real da principal |
+
+Na preparação inicial, a ligação da DLQ é finalizada depois de conhecer o ARN da principal; existe brevemente a policy padrão do serviço. A ligação ausente também pode ser completada em uma preparação parcial compatível. O comando só retorna sucesso após consultar e verificar a configuração final. Não introduzir consumers antes desse sucesso; a ordenação dos jobs no Compose é de 5.3.
+
+Uma reexecução com topologia compatível apenas consulta/verifica: o teste observa os comandos reais do SDK, sem substituir suas respostas. Duas invocações do CLI preservaram ambas as filas, ARNs/URLs, timestamps, tags acrescentadas pelo teste e mensagens com os mesmos IDs/corpos. Policies são comparadas pelos campos, não pela ordem textual do JSON.
+
+Divergências existentes são rejeitadas com exit 1 e diagnóstico JSON `provision.failed`, `SQS_QUEUE_CONFLICT`, `queueRole` e `attribute`, sem credenciais/URLs/payloads. Tipo standard incompatível e drift de visibility foram testados contra filas reais, preservando recursos/mensagem. Não existe DeleteQueue, PurgeQueue ou recriação no provisionador. Reconciliação de atributos mutáveis permanece em **7.1**; este P0 apenas falha explicitamente diante de drift.
+
+As referências de comportamento consultadas foram [CreateQueue](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_CreateQueue.html), [SetQueueAttributes](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SetQueueAttributes.html) e [SQS no LocalStack](https://docs.localstack.cloud/aws/services/sqs/), além do código/tipos das versões instaladas. A prova executada é do LocalStack fixado, não uma homologação contra AWS real.
+
+### Transporte e isolamento — 4.3
+
+O harness existente cria PostgreSQL/LocalStack reais em projetos `jungle-test-<uuid>`, com databases, filas, redes, volumes e portas exclusivos. Os nomes SQS são técnicos e derivados do namespace do teste; nenhuma operação atingiu as filas de desenvolvimento. Setup/cleanup existentes foram reaproveitados, incluindo cleanup após a primeira falha desta implementação.
+
+As mensagens técnicas usam `MessageGroupId` e `MessageDeduplicationId` explícitos. Os testes conferem MessageId, corpo e atributos recebidos, usam o ReceiptHandle real em DeleteMessage e fazem nova consulta vazia após confirmação; a contagem de mensagens não visíveis complementa essa verificação. Mensagens nas duas filas sobreviveram à reexecução do provisionamento, e `ApproximateReceiveCount=1` na primeira leitura do harness confirma ausência de consumo observado pelos scaffolds durante o teste.
+
+No Docker, o mesmo provisionador compilado roda duas vezes e preserva a mensagem enviada pelo host. O cliente compilado no container recebe/confirma essa mensagem, verifica nova leitura vazia e envia outra mensagem técnica para leitura/confirmação pelo host. A imagem continua sem `src/`, testes ou bind mount de fontes, executando Bun 1.4.2. Não houve mudança no Dockerfile ou `.dockerignore`: os novos `.ts` sob `src/` já fazem parte do build permitido e os testes continuam excluídos da imagem.
+
+Não foram implementados inbox, outbox, publisher, consumers, retries financeiros, endpoints/entidades/tabelas financeiras, extensão de visibility ou redrive automático. FIFO não comprova idempotência de negócio. Os cenários 7.2–7.3 e todos os testes financeiros S13 permanecem pendentes.
+
+### Problemas encontrados e soluções
+
+1. **Credenciais congeladas e SDK:** a primeira integração real terminou com **0 pass / 3 fail**. O SDK tenta anexar `$source` às credenciais, mas `loadConfiguration` entrega objetos imutáveis; isso provocou TypeError antes da chamada SQS. O cliente passou a fornecer uma cópia das credenciais ao SDK, preservando a configuração original congelada. A regressão comprova essa preservação e o provisionamento real passou. Nenhuma versão ou patch de dependência precisou ser alterado.
+2. **Tipos das opções resolvidas:** o primeiro typecheck encontrou TS2339 ao inspecionar `httpHandlerConfigs` e TS2349 ao tratar `retryMode` como sempre uma função. Os testes foram corrigidos com narrowing explícito da interface real do SDK; se o handler esperado não existir, o teste falha. Não foram usados `any`, relaxamento de strict ou remoção de asserções.
+3. **Limite efetivo do handler:** a inspeção do código/tipos instalados mostrou a necessidade de `throwOnRequestTimeout: true`. Foi configurado e conferido no handler após acesso real ao LocalStack. Falhas avançadas e testes de recuperação continuam em P1.
+
+### Comandos e resultados do quinto lote
+
+| Comando/verificação | Resultado real |
+|---|---|
+| `bun run typecheck` | Exit 0, strict preservado |
+| `bun run build` | Exit 0, entrypoint e módulos SQS emitidos como ESM `.js` |
+| `bun test` | **56 pass, 0 fail, 243 asserções**, 20,76 s |
+| `DOCKER_CONTEXT=default bun test ./tests/integration/sqs-foundation.test.ts` | **3 pass, 0 fail, 47 asserções** após a correção das credenciais |
+| `DOCKER_CONTEXT=default bun run test:integration` | **12 pass, 0 fail, 186 asserções**, 79,18 s; inclui PostgreSQL e infraestrutura anteriores |
+| `DOCKER_CONTEXT=default bun run test:docker` | **3 pass, 0 fail, 53 asserções**, 66,57 s; API/worker, migrations e SQS reais |
+| `bun run infra:provision` pelo harness no host e imagem | Sucesso em configurações válidas/reexecução; exit 1 nos casos negativos esperados |
+| `openspec validate bootstrap-backend-foundation --type change --strict --no-interactive --json` | Válida, zero issues, exit 0 |
+| `openspec instructions apply --change bootstrap-backend-foundation --json` | 17 concluídas, 17 pendentes; state `ready` para próximos lotes |
+| Listagem de containers/redes/volumes por label `io.jungle.owner` após as suites | Sem recursos residuais |
+| `git diff --check` / `git diff --cached --check` | Sem erros; nenhum commit, push ou PR |
+
+A validação final executou typecheck, build e as três suites sequencialmente com `set -e`: **71 testes aprovados, zero reprovados e 482 asserções**. Os três testes SQS isolados são subconjunto desses 71, não somados novamente. Nenhum teste foi skipped por indisponibilidade de infraestrutura ou substituído por mock.
+
+### Arquivos alterados e próximos passos
+
+Criados: `src/platform/messaging/sqs/{sqs-connection,sqs.module,provision,provision-conflict}.ts`, `src/bootstrap/provision.ts`, `tests/support/sqs.ts`, `tests/smoke/sqs.test.ts`, `tests/integration/sqs-foundation.test.ts` e `tests/docker/sqs.test.ts`.
+
+Modificados: `src/composition/{api,worker}.module.ts`, `src/platform/logging/json-logger.ts`, `package.json` (somente script `infra:provision`), `docker/README.md`, `tasks.md` e este documento. Os testes anteriores foram preservados e executados. Nenhuma mudança de dependências, lockfile, imagens, Compose, banco ou decisões arquiteturais.
+
+Próximo lote recomendado, **sem implementação nesta execução**: **5.1 → 5.2 → 5.3 → 5.4**, health HTTP, probe worker, Compose com jobs/lifecycle e aceite integrado P0. P1 continua obrigatório antes do fechamento da change. O término deste lote não conclui P0 nem o desafio financeiro.

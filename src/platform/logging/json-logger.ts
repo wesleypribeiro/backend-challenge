@@ -2,10 +2,11 @@ import type { LoggerService } from '@nestjs/common';
 import { ConfigurationError } from '../config/configuration.js';
 import type { ProcessRole } from '../config/configuration.js';
 import { requestContext } from './request-context.js';
+import { ProvisionConflict } from '../messaging/sqs/provision-conflict.js';
 
 type Level = 'info' | 'warn' | 'error' | 'debug' | 'fatal';
 type Event = 'process.starting' | 'process.started' | 'process.stopping' | 'process.stopped' |
-  'bootstrap.failed' | 'migration.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
+  'bootstrap.failed' | 'migration.failed' | 'provision.completed' | 'provision.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
 interface Details {
   port?: number;
   runtime?: string;
@@ -42,6 +43,14 @@ export class JsonLogger implements LoggerService {
     if (details.error !== undefined) {
       record.errorType = details.error instanceof ConfigurationError ? 'ConfigurationError' : 'Error';
       if (details.error instanceof ConfigurationError) record.variables = details.error.variables;
+      if (details.error instanceof ProvisionConflict) {
+        record.errorCode = details.error.code;
+        record.queueRole = details.error.queueRole;
+        record.attribute = details.error.attribute;
+      }
+      if (details.error instanceof Error && ['QueueDoesNotExist', 'QueueNameExists', 'InvalidAttributeValue', 'RequestThrottled', 'TimeoutError', 'AbortError'].includes(details.error.name)) {
+        record.errorCode = details.error.name;
+      }
       if (typeof details.error === 'object' && details.error !== null && 'code' in details.error) {
         const code = details.error.code;
         if (typeof code === 'string' && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EADDRINUSE', 'ENOTFOUND', 'EACCES', '28P01', '42501', '2BP01', '57014'].includes(code)) record.errorCode = code;

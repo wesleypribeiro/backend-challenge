@@ -4,7 +4,7 @@ P0 libera o início do domínio financeiro após evidências reais; P1 completa 
 
 O checklist registra somente tarefas com evidências de implementação. Manter a change aberta após este lote e após P0 enquanto houver pendências P1. As decisões D1–D10 e a matriz S13/F1–F7 em `design.md` continuam sendo referência.
 
-Evidências dos quatro lotes em [implementation-notes.md](implementation-notes.md). O lote 3.1–3.4 acrescenta integração MikroORM, contextos HTTP/worker isolados, runner/migration técnica compilados e persistência testada em PostgreSQL real, incluindo a imagem Docker. Cliente/filas SQS da aplicação, health e demais tarefas P0/P1 continuam pendentes. A recusa de `down` com objetos adicionais foi antecipada por solicitação explícita; 6.2 permanece pendente para completar a prova de falha após DDL.
+Evidências dos cinco lotes em [implementation-notes.md](implementation-notes.md). O lote 4.1–4.3 acrescenta cliente SQS local, provisionador compilado de FIFO/DLQ, preservação de recursos/mensagens na reexecução e transporte técnico real pelo host e imagem Docker. Health, composição completa e demais tarefas P0/P1 continuam pendentes. A recusa de `down` com objetos adicionais foi antecipada no lote anterior por solicitação explícita; 6.2 permanece pendente para completar a prova de falha após DDL.
 
 ## 1. P0 — Build compilado e processos sob Bun
 
@@ -31,9 +31,9 @@ Evidências dos quatro lotes em [implementation-notes.md](implementation-notes.m
 
 ## 4. P0 — SQS utilizável sem consumidor financeiro
 
-- [ ] 4.1 Configurar cliente SQS local com timeout/retry limitados e descoberta de URLs; verificar acesso real pelo host e imagem sem hostname/account ID codificado nem fallback AWS. Referência: `sqs-foundation`, D4/D8.
-- [ ] 4.2 Implementar `infra:provision` para principal e DLQ com atributos/políticas de D8 e reexecução segura; verificar atributos reais e segunda execução preservando mensagem, falhando sem delete/recreate se houver conflito. A reconciliação de drift fica em 7.1. Referência: `sqs-foundation`, `local-infrastructure`.
-- [ ] 4.3 Testar send/receive/delete com payload técnico e IDs explícitos em fila isolada; verificar mensagem realmente recebida e confirmada, cleanup próprio e ausência de consumer financeiro na API/worker. Referência: `sqs-foundation`, `infrastructure-testing`.
+- [x] 4.1 Configurar cliente SQS local com timeout/retry limitados e descoberta de URLs; verificar acesso real pelo host e imagem sem hostname/account ID codificado nem fallback AWS. Referência: `sqs-foundation`, D4/D8.
+- [x] 4.2 Implementar `infra:provision` para principal e DLQ com atributos/políticas de D8 e reexecução segura; verificar atributos reais e segunda execução preservando mensagem, falhando sem delete/recreate se houver conflito. A reconciliação de drift fica em 7.1. Referência: `sqs-foundation`, `local-infrastructure`.
+- [x] 4.3 Testar send/receive/delete com payload técnico e IDs explícitos em fila isolada; verificar mensagem realmente recebida e confirmada, cleanup próprio e ausência de consumer financeiro na API/worker. Referência: `sqs-foundation`, `infrastructure-testing`.
 
 ## 5. P0 — Health, execução integrada e aceite do marco
 

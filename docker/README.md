@@ -1,6 +1,6 @@
-# Infraestrutura local — P0 2.3–3.4
+# Infraestrutura local — P0 2.3–4.3
 
-O Compose disponibiliza PostgreSQL e SQS via LocalStack. API, workers, jobs de migrations e provisionamento das filas de negócio ainda não fazem parte do Compose. A aplicação já integra MikroORM e possui runner de migrations separado. Não há tabelas financeiras nem schema `wagering` criado pelo bootstrap do container; esse schema pertence à migration técnica.
+O Compose disponibiliza PostgreSQL e SQS via LocalStack. API, workers, jobs de migrations e provisionamento das filas ainda não fazem parte do Compose. A aplicação integra MikroORM e SQS, com comandos separados de migration e provisionamento. Não há processamento financeiro nem schema `wagering` criado pelo bootstrap do container; esse schema pertence à migration técnica.
 
 ## Pré-requisitos e imagens
 
@@ -23,7 +23,7 @@ docker compose exec -T localstack awslocal sqs list-queues --region us-east-1
 
 Se o contexto atual não tiver daemon, selecionar explicitamente um contexto disponível, por exemplo `DOCKER_CONTEXT=default docker compose ...`. Não é necessário mudar o contexto global.
 
-O healthcheck PostgreSQL verifica `pg_isready` **e** login TCP/`SELECT 1` com `wagering_app`; o de LocalStack executa `ListQueues`. Nenhum healthcheck cria schema, fila ou mensagem. Listagem vazia é esperada antes das tasks 4.x. No host, usar `localhost` com as portas publicadas; dentro da rede Compose, `postgres:5432` e `http://localstack:4566`. `SQS_ENDPOINT_STRATEGY=dynamic` permite que URLs reflitam o endpoint consultado.
+O healthcheck PostgreSQL verifica `pg_isready` **e** login TCP/`SELECT 1` com `wagering_app`; o de LocalStack executa `ListQueues`. Nenhum healthcheck cria schema, fila ou mensagem. Listagem vazia é esperada antes de executar `infra:provision`. No host, usar `localhost` com as portas publicadas; dentro da rede Compose, `postgres:5432` e `http://localstack:4566`. `SQS_ENDPOINT_STRATEGY=dynamic` permite que URLs reflitam o endpoint consultado.
 
 Para parar sem apagar dados PostgreSQL:
 
@@ -67,9 +67,28 @@ O harness em `tests/support/infrastructure.ts` gera projeto `jungle-test-<uuid>`
 
 Setup aguarda healthchecks e comprova `SELECT 1` e `ListQueues` pelo host. Cleanup em `finally`, inclusive após falha de teste/setup, confere nome gerado, label Compose e label de ownership antes de executar `down --volumes` apenas no projeto próprio. Não usa `prune`, recursos externos ou cleanup por prefixo genérico. Verifica depois a ausência dos containers, rede e volume daquele projeto. O teste de coexistência inicia também uma instância privada de referência usando **compose.yaml**, sem acessar o projeto real de desenvolvimento do usuário.
 
-Os testes criam somente fixtures técnicas em databases/filas descartáveis. Verificam autenticação por senha, privilégios, reexecução do bootstrap sem perda de dados, isolamento e limpeza após erro controlado. Não recebem mensagens e não implementam as filas financeiras principal/DLQ. Falta de Docker ou das variáveis obrigatórias do arquivo de teste falha explicitamente, sem mocks ou skip.
+Os testes criam somente fixtures técnicas em databases/filas descartáveis. Verificam autenticação por senha, privilégios, reexecução do bootstrap sem perda de dados, isolamento e limpeza após erro controlado. O harness SQS envia, recebe e confirma somente mensagens técnicas em filas exclusivas; os processos API/worker não consomem mensagens. Falta de Docker ou das variáveis obrigatórias do arquivo de teste falha explicitamente, sem mocks ou skip.
 
-A suite também executa as migrations compiladas, isolamento de contextos HTTP/worker, rollback transacional e round-trip de `NUMERIC(20,2)` como string. `DOCKER_CONTEXT=default bun run test:docker` repete as migrations com a imagem final e PostgreSQL descartável, além do smoke existente. As fixtures ficam exclusivamente em `tests/fixtures`; o runtime não as inclui.
+A suite também executa as migrations compiladas, isolamento de contextos HTTP/worker, rollback transacional e round-trip de `NUMERIC(20,2)` como string. `DOCKER_CONTEXT=default bun run test:docker` repete as migrations e o provisionamento com a imagem final, PostgreSQL/LocalStack descartáveis e troca mensagens técnicas entre host e container. Código e fixtures de testes não entram no runtime.
+
+## Cliente SQS e provisionamento compilado
+
+Após subir as dependências, configurar as variáveis SQS de `.env.example` no ambiente ou em `.env` local ignorado e executar:
+
+```bash
+bun run build
+bun run infra:provision
+```
+
+O comando roda `dist/bootstrap/provision.js` em processo próprio, sem exigir banco/HTTP e sem importar fontes TypeScript. Exige `NODE_ENV`, `AWS_ENDPOINT_URL`, `AWS_REGION=us-east-1`, credenciais fictícias `test`/`test`, `SQS_QUEUE_NAME` e `SQS_DLQ_NAME`. Os nomes padrão do exemplo são `wager-transactions.fifo` e `wager-transactions-dlq.fifo`. Na imagem, usar `run infra:provision` após o nome da imagem (o ENTRYPOINT já é Bun), fornecer essas variáveis ao container e conectá-lo à rede Compose com endpoint `http://localstack:4566`. O teste `tests/docker/sqs.test.ts` demonstra a execução real sem bind mount de fontes.
+
+`SqsConnection` utiliza AWS SDK v3 com endpoint/região/credenciais explícitos, `useQueueUrlAsEndpoint: false`, retry `standard` e `SQS_MAX_ATTEMPTS` (default 3, máximo 5). Timeout de conexão é 1 s; `SQS_REQUEST_TIMEOUT_MS` é 25 s por tentativa por padrão, superior ao long poll de 20 s. `throwOnRequestTimeout: true` torna esse prazo um erro efetivo no handler instalado. O provisionador também tem prazo total de 120 s via AbortSignal. Não utiliza AWS_PROFILE, credenciais da máquina ou endpoint AWS como fallback. As credenciais imutáveis são copiadas antes de entregues ao SDK, que acrescenta metadata interna.
+
+URLs são resolvidas com `GetQueueUrl` e ARNs com `GetQueueAttributes`. Não construir URLs/ARNs nem reutilizar uma URL do host como configuração de rede do container. API/worker recebem o cliente via NestJS, sem chamadas de rede no startup e sem provisionar, receber ou confirmar mensagens; o lifecycle fecha o cliente.
+
+O provisionador consulta e valida recursos existentes antes de escrever, cria a DLQ primeiro e então a principal. Ambas são FIFO, com dedup por conteúdo desabilitada, visibility 60 s e long poll 20 s. Retenção é 345600 s na principal e 1209600 s na DLQ. `RedrivePolicy` aponta ao ARN resolvido da DLQ com `maxReceiveCount=5`; após obter o ARN da principal, `RedriveAllowPolicy` da DLQ fica `byQueue`, restrita a essa fila. Essa última ligação também pode completar uma preparação anterior em que a policy ainda está ausente. Durante a criação inicial existe uma janela com a policy padrão do serviço; a preparação só retorna sucesso após verificar os atributos finais. A ordenação de startup em Compose será acrescentada em 5.3.
+
+Uma nova execução compatível apenas lê/verifica os recursos; preserva filas, tags e mensagens. O sucesso registra `provision.completed`; falha retorna exit 1 e `provision.failed`. Incompatibilidade informa `SQS_QUEUE_CONFLICT`, `queueRole` e `attribute`, sem URLs, credenciais ou payload. Neste P0, divergências de atributos/policies existentes **falham sem reconciliação**. Não há DeleteQueue, PurgeQueue ou recriação automática. A reconciliação de drift fica em 7.1; redelivery/visibility e redrive efetivo até DLQ ficam em 7.2–7.3. FIFO não substitui idempotência persistente, inbox ou atomicidade financeira.
 
 ## MikroORM e migrations compiladas
 
