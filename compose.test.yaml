@@ -1,0 +1,29 @@
+# Arquivo independente: usar -f compose.test.yaml, sem mesclar portas de desenvolvimento.
+name: ${TEST_PROJECT:?Use o harness de testes para gerar TEST_PROJECT}
+
+services:
+  postgres:
+    extends:
+      file: compose.yaml
+      service: postgres
+    environment:
+      APP_DATABASE: ${TEST_DATABASE:?Use o harness de testes para gerar TEST_DATABASE}
+    ports: !override
+      - "127.0.0.1::5432"
+
+  localstack:
+    extends:
+      file: compose.yaml
+      service: localstack
+    ports: !override
+      - "127.0.0.1::4566"
+
+networks:
+  backend:
+    labels:
+      io.jungle.owner: ${INFRA_OWNER:?Use o harness de testes para gerar INFRA_OWNER}
+
+volumes:
+  postgres_data:
+    labels:
+      io.jungle.owner: ${INFRA_OWNER:?Use o harness de testes para gerar INFRA_OWNER}

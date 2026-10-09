@@ -4,7 +4,7 @@ P0 libera o início do domínio financeiro após evidências reais; P1 completa 
 
 O checklist registra somente tarefas com evidências de implementação. Manter a change aberta após este lote e após P0 enquanto houver pendências P1. As decisões D1–D10 e a matriz S13/F1–F7 em `design.md` continuam sendo referência.
 
-Evidências dos lotes 1.1–1.4 e 2.1 → 1.5 → 2.2: [implementation-notes.md](implementation-notes.md). O segundo lote inclui correção do índice Git, configuração validada, imagem Docker executada e logs JSON/correlação. Compose, integração com PostgreSQL/SQS, health e migrations continuam pendentes.
+Evidências dos três lotes em [implementation-notes.md](implementation-notes.md). O lote 2.3–2.5 acrescenta Compose, PostgreSQL/LocalStack reais, papéis separados e harness isolado, com acesso e permissões testados em containers. Integração da aplicação com os clientes, migrations, filas de negócio e health continuam pendentes.
 
 ## 1. P0 — Build compilado e processos sob Bun
 
@@ -18,9 +18,9 @@ Evidências dos lotes 1.1–1.4 e 2.1 → 1.5 → 2.2: [implementation-notes.md]
 
 - [x] 2.1 Implementar configuração validada por papel, `.env.example`, `.gitignore` e `.dockerignore`; verificar variáveis ausentes/inválidas, credenciais locais fictícias, endpoint SQS explícito sem fallback AWS e exclusão de segredos do Git/contexto Docker. Referência: `backend-runtime`, D3.
 - [x] 2.2 Implementar logs JSON de lifecycle/erro e correlação HTTP; verificar JSON parseável, propagação/geração de `x-correlation-id` e ausência de senha, token e connection string em erro controlado. Referência: `backend-runtime`, D9.
-- [ ] 2.3 Criar base Compose com PostgreSQL, LocalStack, rede e volume, usando imagens fixadas e pré-requisitos documentados; verificar `docker compose config`, PostgreSQL saudável e consulta SQS real, com diagnóstico de ativação ausente quando exigida pela versão. Referência: `local-infrastructure`, D4.
-- [ ] 2.4 Configurar database e papéis `wagering_app`/`wagering_migrator` com credenciais separadas; verificar login de ambos e ausência de DDL/propriedade do schema para a aplicação, inclusive em `public`. Referência: `postgresql-foundation`, D5.
-- [ ] 2.5 Preparar `compose.test.yaml` e helpers mínimos de recursos isolados com setup/polling/cleanup; verificar PostgreSQL/LocalStack reais, identificadores exclusivos, limpeza normal restrita e falha explícita por Docker/pré-requisito ausente. Essa base suporta os testes seguintes; o cleanup adversarial fica em 9.1. Referência: `infrastructure-testing`.
+- [x] 2.3 Criar base Compose com PostgreSQL, LocalStack, rede e volume, usando imagens fixadas e pré-requisitos documentados; verificar `docker compose config`, PostgreSQL saudável e consulta SQS real, com diagnóstico de ativação ausente quando exigida pela versão. Referência: `local-infrastructure`, D4.
+- [x] 2.4 Configurar database e papéis `wagering_app`/`wagering_migrator` com credenciais separadas; verificar login de ambos e ausência de DDL/propriedade do schema para a aplicação, inclusive em `public`. Referência: `postgresql-foundation`, D5.
+- [x] 2.5 Preparar `compose.test.yaml` e helpers mínimos de recursos isolados com setup/polling/cleanup; verificar PostgreSQL/LocalStack reais, identificadores exclusivos, limpeza normal restrita e falha explícita por Docker/pré-requisito ausente. Essa base suporta os testes seguintes; o cleanup adversarial fica em 9.1. Referência: `infrastructure-testing`.
 
 ## 3. P0 — MikroORM e migrations reversíveis
 

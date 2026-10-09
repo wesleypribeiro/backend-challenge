@@ -12,6 +12,9 @@
 !src/
 !src/**/
 !src/**/*.ts
+# Inclui automaticamente futuras migrations TypeScript sob src/platform/database/migrations/.
+# Bootstrap PostgreSQL é montado pelo Compose; docker/ e scripts de teste não entram na imagem da aplicação.
+# Ao adicionar runners necessários à imagem, liberar seus caminhos explicitamente acima.
 # Defesa adicional para arquivos locais sob src/.
 **/.env
 **/.env.*

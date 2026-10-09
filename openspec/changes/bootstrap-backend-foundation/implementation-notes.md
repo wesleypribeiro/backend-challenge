@@ -1,8 +1,8 @@
 # Evidências de implementação — bootstrap-backend-foundation
 
-Estado atual: **7/34 tarefas concluídas** — 1.1–1.5, 2.1 e 2.2. Esta evidência não conclui P0 nem a change e não comprova garantias financeiras.
+Estado atual: **10/34 tarefas concluídas** — 1.1–1.5 e 2.1–2.5. Esta evidência não conclui P0 nem a change e não comprova garantias financeiras.
 
-As seções seguintes registram o primeiro lote, que concluiu 1.1–1.4. O segundo lote e suas evidências estão ao final deste documento; os registros históricos abaixo não substituem o estado atual.
+As seções seguintes registram o primeiro lote, que concluiu 1.1–1.4. Os demais lotes e suas evidências estão ao final deste documento; os registros históricos abaixo não substituem o estado atual.
 
 ## Versões fixadas
 
@@ -179,4 +179,76 @@ DOCKER_CONTEXT=default bun run test:docker
 
 Para executar no host, copiar os valores fictícios de `.env.example` para `.env` local e usar `bun run start:api` / `bun run start:worker`. O smoke Docker prepara sua própria configuração e não requer `.env` nem serviços externos. Em máquinas com outro daemon funcional, ajustar ou omitir `DOCKER_CONTEXT`. Os testes de imagem são explícitos; `bun test` continua sendo a suite do host, sem declarar que testou Docker.
 
-Próximo lote recomendado: **2.3 → 2.4 → 2.5**, para Compose com PostgreSQL/LocalStack, papéis reais e harness de integração. Migrations, clientes, filas, health, shutdown com deadline e todos os itens P1 permanecem pendentes.
+Ao término do segundo lote, a sequência recomendada foi **2.3 → 2.4 → 2.5**. Ela foi executada no lote abaixo.
+
+## Terceiro lote — P0 2.3, 2.4 e 2.5
+
+Implementação na branch `develop`, somente infraestrutura local, bootstrap de database/papéis e testes isolados. Os sete itens já aprovados foram preservados. Dependências, `bun.lock` e código da aplicação não foram alterados. Migrations, schema `wagering`, filas de negócio, consumers, integração MikroORM e health da aplicação continuam pendentes. Não houve commit, push ou PR.
+
+Instruções de uso, configuração, credenciais e limitações estão em [docker/README.md](../../../docker/README.md).
+
+### Docker Compose e versões — 2.3
+
+`compose.yaml` contém apenas `postgres` e `localstack`, rede `backend` e volume PostgreSQL `postgres_data`, todos com nomes derivados do projeto Compose, sem `container_name` ou recursos externos. Portas de desenvolvimento ficam em loopback e são configuráveis. Os jobs completos de migration/provisionamento, API e workers serão incorporados nas tarefas próprias.
+
+| Imagem | Digest do índice consultado no registry e utilizado |
+|---|---|
+| `postgres:17.10-bookworm` | `sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f` |
+| `localstack/localstack:4.14.0` | `sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a` |
+
+LocalStack Community 4.14.0 foi escolhido para reproduzir SQS local sem ativação externa. Sua execução real sem token foi comprovada. É uma tag antiga, com limites de manutenção/paridade: futuras versões autenticadas exigem revisão de conta/token e não podem entrar por atualização silenciosa. Não foi armazenado ou solicitado token. O [anúncio oficial](https://blog.localstack.cloud/localstack-single-image-next-steps/) descreve essa alternativa e suas limitações. Não existe garantia de persistência ao recriar LocalStack; o volume persistente deste lote é somente PostgreSQL.
+
+Healthcheck PostgreSQL combina `pg_isready` com `SELECT 1` autenticado como aplicação via TCP. O de LocalStack chama `awslocal sqs list-queues` com credenciais fictícias e endpoint local. Os testes também consultam PostgreSQL e SQS pelo host, verificam ambos como `healthy` e fazem consulta SQS dentro do container. Não se usa somente estado `running` como prova de acesso.
+
+### Bootstrap e privilégios — 2.4
+
+`docker/postgres/10-bootstrap.sh` é executado no init de volume vazio e pode ser reaplicado explicitamente. Usa `\getenv`, quoting do `psql` e criação condicional de database/roles. Não apaga objetos nem cria tabelas/schemas da aplicação. O database é propriedade de `wagering_admin`; credenciais da aplicação e do migrator são distintas.
+
+- `wagering_app`: CONNECT e USAGE de `public`; sem CREATE no database/schema, TEMP, propriedade de schema, superuser, criação de roles/databases, replication ou bypass RLS; não é membro do migrator.
+- `wagering_migrator`: CONNECT, CREATE no database e USAGE/CREATE em `public`, para criar o schema e histórico nas migrations futuras. Não recebe atributos de superuser, CREATEDB ou CREATEROLE.
+- Nenhum grant genérico para tabelas futuras. Grants de DML e SELECT do histórico serão definidos nas migrations correspondentes.
+
+Conexões TCP reais validaram os dois logins e rejeitaram senha errada (`28P01`). Como migrator, o teste criou somente `technical_probe.marker` e `public.technical_history_probe`, com DML explicitamente concedido ao papel de aplicação. Onze operações não autorizadas foram rejeitadas com `42501`: criação de schema, tabelas em `public`/schema técnico, tabela temporária, ALTER, DROP, TRUNCATE, criação de database/role e `SET ROLE wagering_migrator`. SELECT/INSERT autorizados funcionaram. O migrator removeu sua tabela técnica.
+
+O bootstrap foi reexecutado duas vezes contra o mesmo database descartável: OID do database e os dois registros técnicos foram preservados, e a proibição de DDL em `public` continuou valendo. Nenhuma migration de negócio ou financeira foi executada. Scripts de init não rodam automaticamente em volumes existentes; a reaplicação explícita está documentada.
+
+### Isolamento e cleanup — 2.5
+
+`compose.test.yaml` reutiliza os serviços via `extends`, substitui portas com `!override` e exige namespace próprio. O harness gera `jungle-test-<uuid>`, database `wagering_test_<uuid>`, nome de fila técnica, portas efêmeras e label de ownership por execução. Não herda `.env`, `COMPOSE_FILE`, portas ou credenciais de desenvolvimento. Testes executam `pg` e AWS SDK v3 contra os containers reais; o cliente SQS da aplicação ainda não foi implementado.
+
+Uma composição de referência baseada em `compose.yaml` é iniciada em projeto privado do teste, com marker SQL e fila técnica. Ao lado dela, o teste inicia e remove duas instâncias de `compose.test.yaml`, uma com sucesso e outra com erro deliberado. Comprova databases, filas, volumes e portas distintos; ausência dos markers no ambiente isolado; preservação do volume, registro SQL e fila da referência após ambas as limpezas. Nenhuma operação foi feita no projeto de desenvolvimento real do usuário.
+
+Cleanup é limitado ao nome gerado e às labels de projeto/ownership, valida todos os recursos antes de `down --volumes` e verifica sua remoção depois. Não há `prune` nem alvo externo fornecido ao cleanup. Setup falho e falha no corpo do teste passam pelos caminhos de limpeza. O caso de erro controlado foi efetivamente executado; `SIGKILL`/queda do daemon e demais cenários adversariais permanecem em 9.1. Projetos são anunciados para permitir diagnóstico de resíduos se `finally` não puder executar.
+
+O teste de pré-requisitos executa o próprio harness em processo filho apontado a socket Docker inexistente e exige falha explícita; outro caso valida a falha do Compose sem `TEST_PROJECT`. Não há substituição por mocks ou skip por ausência de infraestrutura. Compose 2.24.4+ é necessário para `!override`; validação realizada em Linux amd64, Engine 29.8.1 e Compose 2.40.3.
+
+### Correções adicionais e continuidade
+
+- `git rm openspec/changes/bootstrap-backend-foundation.zip` removeu o ZIP redundante do índice e workspace. A pasta original, proposal, design e seis specs foram preservados.
+- `.dockerignore` documenta a inclusão automática de futuras migrations TypeScript sob `src/` e a necessidade de liberar explicitamente runners adicionais. O bootstrap PostgreSQL permanece fora da imagem da aplicação, montado read-only pelo Compose.
+- `.env.example` acrescenta parâmetros de infraestrutura com senhas de bootstrap comentadas. Customizações administrativas devem usar env-file exclusivo da infraestrutura, nunca o `.env` carregado pela API/worker.
+- A futura ampliação de logs financeiros está registrada em `docker/README.md`: eventos/IDs de mensagem, transação, wallet e provider nas changes F1–F6, mantendo correlação e exclusão de payloads/segredos. Nenhum código de logging financeiro foi adicionado.
+
+### Comandos e resultados do terceiro lote
+
+| Comando/verificação | Resultado real |
+|---|---|
+| `docker --context default version` / `compose version` | Engine 29.8.1 e Compose 2.40.3 acessíveis |
+| `docker --context default buildx imagetools inspect` nas duas tags | Digests acima resolvidos; imagens publicadas para amd64/arm64 |
+| `docker --context default compose -f compose.yaml pull` | Ambas as imagens baixadas com sucesso |
+| `docker --context default compose -f compose.yaml config --quiet` | Exit code 0 |
+| `TEST_PROJECT=jungle-test-config TEST_DATABASE=wagering_test_config INFRA_OWNER=config-check docker --context default compose -f compose.test.yaml config --quiet` | Exit code 0 |
+| `bun run typecheck` / `bun run build` | Exit code 0, TypeScript strict preservado |
+| `DOCKER_CONTEXT=default bun run test:integration` | 3 testes aprovados, zero reprovados, 56 asserções, 48,62 s na execução final; acesso, privilégios, coexistência, cleanup e falha de pré-requisitos reais |
+| `bun test` | 51 aprovados, zero reprovados, 215 asserções; regressão dos lotes anteriores |
+| `DOCKER_CONTEXT=default bun run test:docker` | 1 aprovado, zero reprovados, 22 asserções; imagem compilada preservada |
+| Listagem de containers, volumes e redes por label `io.jungle.owner` após a suite | Sem recursos residuais dos testes |
+| `openspec validate bootstrap-backend-foundation --type change --strict --no-interactive --json` | Change válida, zero issues, exit code 0 |
+| `openspec instructions apply --change bootstrap-backend-foundation --json` | 10 tarefas concluídas, 24 pendentes; somente 2.3–2.5 acrescentadas nesta execução |
+| `git diff --check` / `git diff --cached --check` | Sem erros; código da aplicação, lockfile, README, proposal, design e seis specs preservados |
+
+Problema encontrado: na primeira execução, `awslocal` retornou saída vazia para `ListQueues` sem filas e o teste tentou fazer `JSON.parse` dessa saída. As operações PostgreSQL já haviam passado e o cleanup funcionou mesmo nessa falha; a suite reportou 2 aprovados e 1 reprovado. O teste foi corrigido para consultar `length(QueueUrls || [])` com saída JSON explícita. A execução completa posterior passou. O diagnóstico de namespace ausente também foi refinado para identificar a variável sem imprimir valores.
+
+Criados: `compose.yaml`, `compose.test.yaml`, `docker/postgres/10-bootstrap.sh`, `docker/README.md`, `tests/support/infrastructure.ts`, `tests/fixtures/postgresql-permissions.ts`, `tests/integration/local-infrastructure.test.ts`. Modificados: `.env.example`, `.dockerignore`, `package.json` (script `test:integration`), `tasks.md` e este registro. Removido: somente o ZIP redundante solicitado.
+
+Próximo lote recomendado: **3.1 → 3.2 → 3.3 → 3.4** — integração MikroORM, runner compilado, migration técnica reversível e testes SQL correspondentes. Nenhuma dessas tarefas foi iniciada. Permanecem pendentes filas de negócio, health, lifecycle completo, P1 e todos os testes financeiros da matriz S13.

@@ -1,0 +1,64 @@
+name: jungle-wagering
+
+services:
+  postgres:
+    image: postgres:17.10-bookworm@sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
+    environment:
+      POSTGRES_USER: wagering_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-local_admin_password}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+      APP_DATABASE: ${APP_DATABASE:-wagering}
+      WAGERING_APP_PASSWORD: ${WAGERING_APP_PASSWORD:-local_app_password}
+      WAGERING_MIGRATOR_PASSWORD: ${WAGERING_MIGRATOR_PASSWORD:-local_migrator_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/10-bootstrap.sh:/docker-entrypoint-initdb.d/10-bootstrap.sh:ro,z
+    networks: [backend]
+    labels:
+      io.jungle.owner: ${INFRA_OWNER:-development}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${APP_DATABASE}" &&
+          PGPASSWORD="$${WAGERING_APP_PASSWORD}" psql -X -h 127.0.0.1
+          -U wagering_app -d "$${APP_DATABASE}" -v ON_ERROR_STOP=1 -tAc 'SELECT 1' >/dev/null
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  localstack:
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+    environment:
+      SERVICES: sqs
+      SQS_ENDPOINT_STRATEGY: dynamic
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localhost:4566
+      EAGER_SERVICE_LOADING: "1"
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
+    networks: [backend]
+    labels:
+      io.jungle.owner: ${INFRA_OWNER:-development}
+    healthcheck:
+      test: [CMD-SHELL, "awslocal sqs list-queues --region us-east-1 >/dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+networks:
+  backend:
+    labels:
+      io.jungle.owner: ${INFRA_OWNER:-development}
+
+volumes:
+  postgres_data:
+    labels:
+      io.jungle.owner: ${INFRA_OWNER:-development}
