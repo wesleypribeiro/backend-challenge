@@ -1,0 +1,36 @@
+{
+  "name": "jungle-wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "engines": {
+    "bun": "1.4.2"
+  },
+  "scripts": {
+    "typecheck": "bun ./node_modules/typescript/bin/tsc --project tsconfig.json --noEmit",
+    "build": "bun scripts/build.ts",
+    "start:api": "bun dist/bootstrap/api.js",
+    "start:worker": "bun dist/bootstrap/worker.js",
+    "test": "bun test",
+    "test:smoke": "bun test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "3.1148.0",
+    "@mikro-orm/core": "7.2.4",
+    "@mikro-orm/migrations": "7.2.4",
+    "@mikro-orm/nestjs": "7.1.0",
+    "@mikro-orm/postgresql": "7.2.4",
+    "@nestjs/common": "12.1.2",
+    "@nestjs/core": "12.1.2",
+    "@nestjs/platform-express": "12.1.2",
+    "pg": "8.23.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3"
+  }
+}

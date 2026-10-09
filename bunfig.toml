@@ -1,0 +1,8 @@
+[install]
+exact = true
+auto = "disable"
+
+[test]
+root = "./tests/smoke"
+preload = ["./tests/support/compile.ts"]
+timeout = 20000

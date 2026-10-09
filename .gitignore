@@ -1,0 +1,50 @@
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Local data
+.local/
+.postgres-data/
+.localstack/
