@@ -82,13 +82,14 @@ export function toWagerTransactionDomain(p: WagerTransactionPersistence): WagerT
     gameId: p.gameId,
     kind: p.kind,
     money: Money.from({ amount: p.moneyAmount, currency: p.moneyCurrency }),
-    referenceExternalTransactionId: p.referenceExternalTransactionId,
+    // Nullable columns hydrate as `null`, not `undefined` — normalize both.
+    referenceExternalTransactionId: p.referenceExternalTransactionId ?? undefined,
     createdAt: p.createdAt,
     status: p.status,
-    referenceTransactionId: p.referenceTransactionId,
-    failureCode: p.failureCode,
-    processedAt: p.processedAt,
-    resultBalance: p.resultBalance === undefined
+    referenceTransactionId: p.referenceTransactionId ?? undefined,
+    failureCode: p.failureCode ?? undefined,
+    processedAt: p.processedAt ?? undefined,
+    resultBalance: p.resultBalance == null
       ? undefined
       : Money.from({ amount: p.resultBalance, currency: p.moneyCurrency }),
   });

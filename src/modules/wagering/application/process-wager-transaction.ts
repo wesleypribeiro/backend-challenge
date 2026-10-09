@@ -9,6 +9,7 @@ import {
 } from '../../../domain/wagering/wager-transaction.js';
 import { FailureCode } from '../../../domain/wagering/failure-code.js';
 import { computePayloadHash } from '../../../domain/wagering/payload-hash.js';
+import { assertValidBusinessIdentifiers } from '../../../domain/wagering/business-identifiers.js';
 import {
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
@@ -73,6 +74,9 @@ export class ProcessWagerTransaction {
   }
 
   async execute(input: ProcessWagerTransactionInput): Promise<ProcessWagerTransactionResult> {
+    // Structural validation first: a malformed payload raises before any
+    // transaction begins, so it can never produce a partial write.
+    assertValidBusinessIdentifiers(input);
     const money = Money.from({ amount: input.amount, currency: input.currency });
     const payloadHash = computePayloadHash({
       providerId: input.providerId,
@@ -139,10 +143,8 @@ export class ProcessWagerTransaction {
       return this.rejectAndPersist(tx, entity, FailureCode.CurrencyMismatch);
     }
 
-    const needsReference = entity.requiresReference()
-      || (entity.kind === WagerTransactionKind.Win && entity.referenceExternalTransactionId !== undefined);
     let reference: WagerTransaction | undefined;
-    if (needsReference) {
+    if (entity.waitsForReference()) {
       const referenceExternalId = entity.referenceExternalTransactionId;
       if (!referenceExternalId) {
         throw new Error(`Transaction ${entity.id} requires a reference external id`);

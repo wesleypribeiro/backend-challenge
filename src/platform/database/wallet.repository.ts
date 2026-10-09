@@ -3,6 +3,11 @@ import type { Wallet } from '../../domain/wallet/wallet.js';
 import { LedgerDirection, type WalletLedgerEntry } from '../../domain/wallet/ledger-entry.js';
 import { WagerTransaction } from '../../domain/wagering/wager-transaction.js';
 import { computePayloadHash } from '../../domain/wagering/payload-hash.js';
+import { OutboxMessage } from '../../domain/wagering/outbox-message.js';
+import {
+  WagerTransactionProcessed,
+  WalletBalanceChanged,
+} from '../../domain/wagering/events.js';
 import {
   WalletSchema,
   fromWalletDomain,
@@ -15,13 +20,22 @@ import {
   WagerTransactionSchema,
   fromWagerTransactionDomain,
 } from './entities/wager-transaction.entity.js';
+import { OutboxEventSchema, toOutboxEventPersistence } from './entities/outbox-event.entity.js';
+
+export interface WalletRepositoryOptions {
+  /** Seam for deterministic event ids in tests. Defaults to crypto.randomUUID. */
+  idGenerator?: () => string;
+}
 
 /**
  * Unit of Work adapter for opening a wallet. All rows — wallet, its OPENING
- * ledger entry and the internal OPENING `WagerTransaction` (F1 D10 handoff) —
- * are scheduled in the same EntityManager and written by a single flush, so
- * they share one SQL transaction (all-or-nothing) and the ledger entry's
- * `transaction_id` always references a real transaction row.
+ * ledger entry, the internal OPENING `WagerTransaction` (F1 D10 handoff) and
+ * its outbox events (README §11: every applied transaction emits
+ * WagerTransactionProcessed; every balance movement emits WalletBalanceChanged,
+ * including the opening credit) — are scheduled in the same EntityManager and
+ * written by a single flush, so they share one SQL transaction
+ * (all-or-nothing) and the ledger entry's `transaction_id` always references
+ * a real transaction row.
  *
  * Before scheduling anything, `saveOpen` enforces the opening correspondence:
  * a positive balance requires its OPENING CREDIT entry (and vice versa), and
@@ -30,17 +44,22 @@ import {
  * leaves the database untouched.
  */
 export class WalletRepository {
-  constructor(private readonly em: EntityManager) {}
+  private readonly idGenerator: () => string;
+
+  constructor(private readonly em: EntityManager, options: WalletRepositoryOptions = {}) {
+    this.idGenerator = options.idGenerator ?? (() => crypto.randomUUID());
+  }
 
   async saveOpen(wallet: Wallet, ledgerEntry?: WalletLedgerEntry): Promise<void> {
     this.assertOpeningPair(wallet, ledgerEntry);
     this.em.create(WalletSchema, fromWalletDomain(wallet));
     if (ledgerEntry) {
       this.em.create(WalletLedgerEntrySchema, fromWalletLedgerEntryDomain(ledgerEntry));
-      this.em.create(
-        WagerTransactionSchema,
-        fromWagerTransactionDomain(this.buildOpeningTransaction(wallet, ledgerEntry)),
-      );
+      const opening = this.buildOpeningTransaction(wallet, ledgerEntry);
+      this.em.create(WagerTransactionSchema, fromWagerTransactionDomain(opening));
+      for (const message of this.buildOpeningEvents(opening, wallet, ledgerEntry)) {
+        this.em.create(OutboxEventSchema, toOutboxEventPersistence(message));
+      }
     }
     await this.em.flush();
   }
@@ -73,6 +92,50 @@ export class WalletRepository {
       }),
       createdAt: entry.createdAt,
     });
+  }
+
+  /**
+   * Outbox events for the opening credit (README §11): the OPENING
+   * transaction is applied, so it emits WagerTransactionProcessed; the
+   * balance moved, so it also emits WalletBalanceChanged. Committed in the
+   * same flush as wallet + transaction + ledger; publishing is F4's job.
+   */
+  private buildOpeningEvents(
+    opening: WagerTransaction,
+    wallet: Wallet,
+    entry: WalletLedgerEntry,
+  ): OutboxMessage[] {
+    const ctx = { correlationId: opening.idempotencyKey };
+    const occurredAt = opening.processedAt ?? opening.createdAt;
+    return [
+      OutboxMessage.enqueue(WagerTransactionProcessed.from({
+        eventId: this.idGenerator(),
+        aggregateId: opening.id,
+        ctx,
+        occurredAt,
+        transactionId: opening.id,
+        walletId: wallet.id,
+        providerId: opening.providerId,
+        externalTransactionId: opening.externalTransactionId,
+        kind: opening.kind,
+        money: entry.amount.toJSON(),
+        referenceTransactionId: undefined,
+        resultBalance: entry.balanceAfter.toJSON(),
+      })),
+      OutboxMessage.enqueue(WalletBalanceChanged.from({
+        eventId: this.idGenerator(),
+        aggregateId: wallet.id,
+        ctx,
+        occurredAt,
+        walletId: wallet.id,
+        transactionId: opening.id,
+        direction: LedgerDirection.Credit,
+        money: entry.amount.toJSON(),
+        balanceBefore: entry.balanceBefore.toJSON(),
+        balanceAfter: entry.balanceAfter.toJSON(),
+        walletVersion: wallet.version,
+      })),
+    ];
   }
 
   private assertOpeningPair(wallet: Wallet, entry?: WalletLedgerEntry): void {

@@ -282,9 +282,9 @@ export class WagerTransaction {
 
   markPendingReference(): void {
     this.assertNotTerminal('markPendingReference');
-    if (!this.requiresReference()) {
+    if (!this.waitsForReference()) {
       throw new InvalidTransactionStateError(
-        `${this.kind} does not require a reference and cannot be pending-reference`,
+        `${this.kind} cannot be pending-reference without an informed reference`,
       );
     }
     this._status = WagerTransactionStatus.PendingReference;
@@ -316,6 +316,17 @@ export class WagerTransaction {
   /** true for REFUND and ROLLBACK (README rule 1). */
   requiresReference(): boolean {
     return REFERENCE_REQUIRED_KINDS.has(this.kind);
+  }
+
+  /**
+   * Whether this transaction may wait as PENDING_REFERENCE: the kinds that
+   * require a reference (REFUND/ROLLBACK) plus WIN with an optional reference
+   * explicitly informed — an absent optional reference on WIN is processed
+   * normally, but an informed one that has not resolved yet waits (README §7).
+   */
+  waitsForReference(): boolean {
+    return this.requiresReference()
+      || (this.kind === WagerTransactionKind.Win && Boolean(this.referenceExternalTransactionId));
   }
 
   matchesPayload(payloadHash: string): boolean {

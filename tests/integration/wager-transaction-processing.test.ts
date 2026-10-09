@@ -15,6 +15,7 @@ const { Wallet } = await compiled<typeof import('../../src/domain/wallet/wallet.
 const { WalletRepository } = await compiled<typeof import('../../src/platform/database/wallet.repository.js')>('dist/platform/database/wallet.repository.js');
 const { WagerTransactionKind } = await compiled<typeof import('../../src/domain/wagering/wager-transaction.js')>('dist/domain/wagering/wager-transaction.js');
 const { ProcessWagerTransaction } = await compiled<typeof import('../../src/modules/wagering/application/process-wager-transaction.js')>('dist/modules/wagering/application/process-wager-transaction.js');
+const { InvalidBusinessIdentifierError } = await compiled<typeof import('../../src/domain/wagering/business-identifiers.js')>('dist/domain/wagering/business-identifiers.js');
 
 let infra: TestInfrastructure;
 let orm: MikroORM;
@@ -90,10 +91,24 @@ const walletBalance = async (walletId: string) =>
 const assertLedgerInvariant = (walletId: string) =>
   sharedInvariant((sql, params) => infra.query('app', sql, params), walletId);
 
+/** Events of provider transactions only — the internal OPENING pair lives on
+ * its own transaction and is asserted by the opening test. */
 const eventsForWallet = async (walletId: string) =>
   (await infra.query('app',
-    `select event_type, count(*)::int as count from wagering.outbox_event
-     where payload->'data'->>'walletId' = $1 group by event_type order by event_type`, [walletId]))
+    `select o.event_type as event_type, count(*)::int as count
+     from wagering.outbox_event o
+     join wagering.wager_transaction t on t.id = (o.payload->'data'->>'transactionId')::uuid
+     where o.payload->'data'->>'walletId' = $1 and t.provider_id <> 'internal'
+     group by event_type order by event_type`, [walletId]))
+    .rows as Array<{ event_type: string; count: number }>;
+
+const openingEventsForWallet = async (walletId: string) =>
+  (await infra.query('app',
+    `select o.event_type as event_type, count(*)::int as count
+     from wagering.outbox_event o
+     join wagering.wager_transaction t on t.id = (o.payload->'data'->>'transactionId')::uuid
+     where o.payload->'data'->>'walletId' = $1 and t.kind = 'OPENING'
+     group by event_type order by event_type`, [walletId]))
     .rows as Array<{ event_type: string; count: number }>;
 
 /** Conta apenas lançamentos de operações de provedor ( exclui o OPENING da abertura ). */
@@ -235,6 +250,46 @@ test('WIN credits the wallet and may reference a BET of the same round', async (
   await assertLedgerInvariant(walletId);
 });
 
+test('WIN without a reference is processed normally — the optional reference is not required', async () => {
+  const { walletId, playerId } = await openWallet('100.00');
+  const win = await submit(useCase(), { playerId, walletId, kind: WagerTransactionKind.Win, amount: '35.00' });
+  expect(win).toMatchObject({ outcome: 'processed', balance: { amount: '135.00', currency: 'BRL' } });
+  expect(await playerLedgerCount(walletId)).toEqual({ c: 1 });
+  await assertLedgerInvariant(walletId);
+});
+
+test('WIN with a missing optional reference waits as PENDING_REFERENCE without credit or ledger', async () => {
+  const { walletId, playerId } = await openWallet('100.00');
+  const wc = useCase();
+  const missingBet = crypto.randomUUID();
+  const winExternal = crypto.randomUUID();
+  const winInput = {
+    playerId, walletId, kind: WagerTransactionKind.Win, amount: '35.00',
+    externalTransactionId: winExternal, idempotencyKey: `provider-a:${winExternal}`,
+    referenceExternalTransactionId: missingBet,
+  };
+
+  const pending = await submit(wc, winInput);
+  expect(pending).toMatchObject({ outcome: 'pendingReference', idempotentReplay: false });
+  expect(await walletBalance(walletId)).toMatchObject({ balance: '100.00', version: 1 });
+  expect(await playerLedgerCount(walletId)).toEqual({ c: 0 });
+  const pendingRow = await transactionRow((pending as { transactionId: string }).transactionId);
+  expect(pendingRow.status).toBe('PENDING_REFERENCE');
+  expect(await eventsForWallet(walletId)).toEqual([{ event_type: 'WagerTransactionPendingReference', count: 1 }]);
+
+  // Reenvio idempotente: mesmo resultado, mesma linha, nenhum evento novo.
+  const replay = await submit(wc, winInput);
+  expect(replay).toMatchObject({
+    outcome: 'pendingReference',
+    idempotentReplay: true,
+    transactionId: (pending as { transactionId: string }).transactionId,
+  });
+  expect(await walletBalance(walletId)).toMatchObject({ balance: '100.00', version: 1 });
+  expect(await playerLedgerCount(walletId)).toEqual({ c: 0 });
+  expect(await eventsForWallet(walletId)).toEqual([{ event_type: 'WagerTransactionPendingReference', count: 1 }]);
+  await assertLedgerInvariant(walletId);
+});
+
 test('currency and player mismatches are distinct business rejections', async () => {
   const { walletId, playerId } = await openWallet('100.00');
   const wc = useCase();
@@ -258,24 +313,121 @@ test('OPENING submissions are structural rejections, not persisted rows', async 
   await assertLedgerInvariant(walletId);
 });
 
-test('REFUND without its reference persists PENDING_REFERENCE and applies once the BET arrives', async () => {
+test('wallet opening commits its OPENING events atomically with wallet, transaction and ledger', async () => {
+  const { walletId } = await openWallet('100.00');
+  // README §11: toda transação aplicada emite WagerTransactionProcessed; o
+  // saldo que se move emite WalletBalanceChanged — o crédito de abertura
+  // incluído, gravado no mesmo flush (publicação é F4).
+  expect(await openingEventsForWallet(walletId)).toEqual([
+    { event_type: 'WagerTransactionProcessed', count: 1 },
+    { event_type: 'WalletBalanceChanged', count: 1 },
+  ]);
+  const [balanceEvent] = (await infra.query('app',
+    `select o.payload->'data' as data from wagering.outbox_event o
+     join wagering.wager_transaction t on t.id = (o.payload->'data'->>'transactionId')::uuid
+     where t.kind = 'OPENING' and o.event_type = 'WalletBalanceChanged'
+       and o.payload->'data'->>'walletId' = $1`, [walletId])).rows as Array<{ data: Record<string, unknown> }>;
+  expect(balanceEvent!.data).toMatchObject({
+    walletId,
+    direction: 'CREDIT',
+    money: { amount: '100.00', currency: 'BRL' },
+    balanceBefore: { amount: '0.00', currency: 'BRL' },
+    balanceAfter: { amount: '100.00', currency: 'BRL' },
+    walletVersion: 1,
+  });
+  await assertLedgerInvariant(walletId);
+});
+
+test('zero-balance opening writes no transaction, no ledger entry and no events', async () => {
+  const { walletId } = await openWallet('0.00');
+  expect(await openingEventsForWallet(walletId)).toEqual([]);
+  expect((await infra.query('app', "select count(*)::int as c from wagering.wager_transaction where wallet_id = $1", [walletId])).rows)
+    .toEqual([{ c: 0 }]);
+  expect((await infra.query('app', 'select count(*)::int as c from wagering.wallet_ledger_entry where wallet_id = $1', [walletId])).rows)
+    .toEqual([{ c: 0 }]);
+});
+
+test('structurally invalid identifiers raise before any write — never a partial or persisted rejection', async () => {
+  const { walletId, playerId } = await openWallet('100.00');
+  const wc = useCase();
+  const cases = [
+    { label: 'walletId not a UUID', input: { playerId, walletId: 'not-a-uuid', amount: '10.00' } },
+    { label: 'playerId not a UUID', input: { playerId: 'p1', walletId, amount: '10.00' } },
+    { label: 'empty providerId', input: { playerId, walletId, providerId: '', amount: '10.00' } },
+    { label: 'oversized idempotencyKey', input: { playerId, walletId, idempotencyKey: 'k'.repeat(256), amount: '10.00' } },
+    { label: 'empty roundId', input: { playerId, walletId, roundId: '', amount: '10.00' } },
+  ] as const;
+  for (const { input } of cases) {
+    await expect(submit(wc, input)).rejects.toBeInstanceOf(InvalidBusinessIdentifierError);
+  }
+  // Nenhuma escrita parcial: a wallet permanece intacta e nenhuma linha nova.
+  expect(await walletBalance(walletId)).toMatchObject({ balance: '100.00', version: 1 });
+  expect(await playerLedgerCount(walletId)).toEqual({ c: 0 });
+  expect((await infra.query('app', "select count(*)::int as c from wagering.wager_transaction where wallet_id = $1 and provider_id <> 'internal'", [walletId])).rows)
+    .toEqual([{ c: 0 }]);
+  expect(await eventsForWallet(walletId)).toEqual([]);
+  await assertLedgerInvariant(walletId);
+});
+
+test('REFUND with a missing reference stays PENDING_REFERENCE; idempotent resubmission replays it', async () => {
+  const { walletId, playerId } = await openWallet('100.00');
+  const wc = useCase();
+  const betExternal = crypto.randomUUID();
+  const refundExternal = crypto.randomUUID();
+  const refundInput = {
+    playerId, walletId, kind: WagerTransactionKind.Refund, amount: '20.00',
+    externalTransactionId: refundExternal, idempotencyKey: `provider-a:${refundExternal}`,
+    referenceExternalTransactionId: betExternal,
+  };
+
+  const early = await submit(wc, refundInput);
+  expect(early).toMatchObject({ outcome: 'pendingReference', idempotentReplay: false });
+  const earlyId = (early as { transactionId: string }).transactionId;
+  expect(await walletBalance(walletId)).toMatchObject({ balance: '100.00', version: 1 });
+  expect(await eventsForWallet(walletId)).toEqual([{ event_type: 'WagerTransactionPendingReference', count: 1 }]);
+
+  // A BET chegando não resolve a REFUND pendente: o reprocessamento da própria
+  // linha PENDING_REFERENCE é responsabilidade do scheduler F5, preservando o
+  // transactionId original. Esta change não a declara resolvida.
+  await submit(wc, { playerId, walletId, externalTransactionId: betExternal, amount: '20.00' });
+
+  // Reenvio idempotente da MESMA submissão: replay do resultado pendente.
+  const replay = await submit(wc, refundInput);
+  expect(replay).toMatchObject({ outcome: 'pendingReference', idempotentReplay: true, transactionId: earlyId });
+  expect(await walletBalance(walletId)).toMatchObject({ balance: '80.00', version: 2 });
+  expect((await transactionRow(earlyId)).status).toBe('PENDING_REFERENCE');
+  expect(await eventsForWallet(walletId)).toEqual([
+    { event_type: 'WagerTransactionPendingReference', count: 1 },
+    { event_type: 'WagerTransactionProcessed', count: 1 },
+    { event_type: 'WalletBalanceChanged', count: 1 },
+  ]);
+  await assertLedgerInvariant(walletId);
+});
+
+test('a second REFUND with a fresh key applies once the BET exists while the early pending row remains', async () => {
   const { walletId, playerId } = await openWallet('100.00');
   const wc = useCase();
   const betExternal = crypto.randomUUID();
 
+  // Submissão antecipada distinta: fica PENDING_REFERENCE para sempre nesta
+  // change — nenhum código aqui a resolve (F5 fará o reprocessamento).
   const early = await submit(wc, {
     playerId, walletId, kind: WagerTransactionKind.Refund, amount: '20.00', referenceExternalTransactionId: betExternal,
   });
-  expect(early).toMatchObject({ outcome: 'pendingReference', idempotentReplay: false });
-  expect(await walletBalance(walletId)).toMatchObject({ balance: '100.00', version: 1 });
-  expect(await eventsForWallet(walletId)).toEqual([{ event_type: 'WagerTransactionPendingReference', count: 1 }]);
+  expect(early).toMatchObject({ outcome: 'pendingReference' });
+  const earlyId = (early as { transactionId: string }).transactionId;
 
   await submit(wc, { playerId, walletId, externalTransactionId: betExternal, amount: '20.00' });
+
+  // Uma NOVA submissão (chave nova) da mesma referência aplica: é outra
+  // transação, não a resolução da primeira.
   const applied = await submit(wc, {
     playerId, walletId, kind: WagerTransactionKind.Refund, amount: '20.00', referenceExternalTransactionId: betExternal,
   });
-  // Nova submissão com nova key: o PENDING_REFERENCE antigo permanece; esta é aplicada.
   expect(applied).toMatchObject({ outcome: 'processed', balance: { amount: '100.00', currency: 'BRL' } });
+  expect((await transactionRow(earlyId)).status).toBe('PENDING_REFERENCE');
+  // Apenas o débito da BET e o crédito da REFUND aplicada movem o saldo.
+  expect(await playerLedgerCount(walletId)).toEqual({ c: 2 });
   await assertLedgerInvariant(walletId);
 });
 

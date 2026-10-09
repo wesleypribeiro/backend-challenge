@@ -132,7 +132,7 @@ test('failed is terminal and carries the failure code', () => {
   expect(tx.isTerminal()).toBe(true);
 });
 
-test('markPendingReference requires a reference kind', () => {
+test('markPendingReference is allowed for reference kinds and for WIN with an informed reference', () => {
   const refund = WagerTransaction.create({
     ...betProps,
     id: 'tx-3',
@@ -143,8 +143,54 @@ test('markPendingReference requires a reference kind', () => {
   expect(refund.status).toBe(WagerTransactionStatus.PendingReference);
   expect(refund.isTerminal()).toBe(false);
 
+  // WIN with the optional reference explicitly informed waits when it is
+  // missing; the transition is part of the contract.
+  const win = WagerTransaction.create({
+    ...betProps,
+    id: 'tx-win',
+    kind: WagerTransactionKind.Win,
+    externalTransactionId: 'win-1',
+    idempotencyKey: 'win-k1',
+    referenceExternalTransactionId: 'bet-not-yet',
+  });
+  expect(win.waitsForReference()).toBe(true);
+  win.markPendingReference();
+  expect(win.status).toBe(WagerTransactionStatus.PendingReference);
+});
+
+test('markPendingReference is refused for BET and for WIN without a reference', () => {
   const bet = WagerTransaction.create({ ...betProps, id: 'tx-4' });
-  expect(() => bet.markPendingReference()).toThrow(/does not require a reference/);
+  expect(bet.waitsForReference()).toBe(false);
+  expect(() => bet.markPendingReference()).toThrow(/cannot be pending-reference/);
+
+  const win = WagerTransaction.create({
+    ...betProps,
+    id: 'tx-win2',
+    kind: WagerTransactionKind.Win,
+    externalTransactionId: 'win-2',
+    idempotencyKey: 'win-k2',
+  });
+  expect(win.waitsForReference()).toBe(false);
+  expect(() => win.markPendingReference()).toThrow(/cannot be pending-reference/);
+});
+
+test('waitsForReference is true exactly for REFUND, ROLLBACK and WIN-with-reference', () => {
+  const cases: [WagerTransactionKind, string | undefined, boolean][] = [
+    [WagerTransactionKind.Bet, undefined, false],
+    [WagerTransactionKind.Win, undefined, false],
+    [WagerTransactionKind.Win, 'ext-0', true],
+    [WagerTransactionKind.Loss, undefined, false],
+    [WagerTransactionKind.Refund, 'ext-0', true],
+    [WagerTransactionKind.Rollback, 'ext-0', true],
+  ];
+  for (const [kind, reference, expected] of cases) {
+    const tx = WagerTransaction.create({
+      ...betProps,
+      kind,
+      ...(reference ? { referenceExternalTransactionId: reference } : {}),
+    });
+    expect(tx.waitsForReference()).toBe(expected);
+  }
 });
 
 test('a PENDING_REFERENCE transaction can later be processed', () => {

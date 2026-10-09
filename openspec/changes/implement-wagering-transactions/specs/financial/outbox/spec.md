@@ -39,6 +39,10 @@ The outbox MUST persist, for each outcome, exactly the events defined by the bus
 - **WHEN** an identical submission is replayed
 - **THEN** no new outbox row is created
 
+#### Scenario: Opening emits processed + balance-changed
+- **WHEN** a wallet is opened with a positive balance
+- **THEN** the internal `OPENING` transaction commits one `WagerTransactionProcessed` and one `WalletBalanceChanged` event in the same flush (README §11 applies to every applied transaction and every balance movement, including the opening credit)
+
 ### Requirement: Event Envelope
 Every outbox payload MUST be the serialized `IntegrationEvent.toJSON()` envelope: `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` (optional), `occurredAt` (ISO-8601), `version`, and `data`. `data` carries decimal-string `MoneyProps`, never live `Money` instances. `eventType` and `version` are defined on the concrete event class, not passed at the call site.
 

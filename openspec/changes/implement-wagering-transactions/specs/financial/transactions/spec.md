@@ -21,7 +21,7 @@ A wager transaction is created in `PENDING` and transitions to exactly one of `P
 - **THEN** the transition is accepted and the corresponding fields (`processedAt`, `failureCode`) are set
 
 ### Requirement: Reference Requirements by Kind
-`OPENING` is internal and MUST NOT be submitted through the public API or the queue. `REFUND` and `ROLLBACK` MUST carry `referenceExternalTransactionId`; `WIN` MAY carry one (referencing a BET of the same round); `BET` and `LOSS` MUST NOT. `OPENING` is created only by the wallet-opening flow.
+`OPENING` is internal and MUST NOT be submitted through the public API or the queue. `REFUND` and `ROLLBACK` MUST carry `referenceExternalTransactionId`; `WIN` MAY carry one (referencing a BET of the same round); `BET` and `LOSS` MUST NOT. A `WIN` whose optional reference was explicitly informed MAY transition to `PENDING_REFERENCE` when that reference cannot yet be resolved; a `WIN` without a reference MUST NOT. `OPENING` is created only by the wallet-opening flow.
 
 #### Scenario: REFUND without reference rejected at creation
 - **WHEN** a `REFUND` transaction is created without `referenceExternalTransactionId`
@@ -34,6 +34,14 @@ A wager transaction is created in `PENDING` and transitions to exactly one of `P
 #### Scenario: BET with a reference is invalid
 - **WHEN** a `BET` transaction is created with `referenceExternalTransactionId` set
 - **THEN** creation fails
+
+#### Scenario: WIN with an informed reference may wait
+- **WHEN** `markPendingReference` is called on a `WIN` whose optional reference was explicitly informed
+- **THEN** the transition succeeds and the status becomes `PENDING_REFERENCE`
+
+#### Scenario: WIN without a reference cannot wait
+- **WHEN** `markPendingReference` is called on a `WIN` without `referenceExternalTransactionId` (or on a `BET`/`LOSS`)
+- **THEN** the transition raises a state error
 
 ### Requirement: Balance Effects
 `BET` MUST debit the wallet, `WIN` and `REFUND` MUST credit it, `ROLLBACK` MUST apply the inverse of the referenced transaction's direction, and `LOSS` MUST change no balance and produce no ledger entry. A `REJECTED` transaction MUST NEVER change the balance or produce a ledger entry.
@@ -52,6 +60,14 @@ When a wallet is opened with a positive balance, the internal `OPENING` transact
 #### Scenario: Opening persists transaction, wallet and entry together
 - **WHEN** a wallet is opened with a positive balance
 - **THEN** a `PROCESSED` `OPENING` transaction, the wallet and one `CREDIT` ledger entry referencing that transaction are all committed atomically
+
+#### Scenario: Opening commits its integration events atomically
+- **WHEN** a wallet is opened with a positive balance
+- **THEN** one `WagerTransactionProcessed` and one `WalletBalanceChanged` outbox event for the `OPENING` transaction are committed in the same SQL transaction (README §11: every applied transaction emits processed; every balance movement emits balance-changed), with no publication before commit
+
+#### Scenario: Zero-balance opening writes nothing beyond the wallet
+- **WHEN** a wallet is opened with a zero balance
+- **THEN** no `OPENING` transaction, no ledger entry and no outbox event exist for it
 
 #### Scenario: Opening rollback leaves nothing
 - **WHEN** any write in the opening transaction fails
