@@ -37,10 +37,11 @@ The foundation layer established the LocalStack and PostgreSQL infrastructure al
 4. **Persistence & Transactions**:
    - Wallet and Ledger insert must occur in the same SQL transaction. `WalletRepository.saveOpen` creates both entities in a single Unit of Work and calls `em.flush()` once; MikroORM wraps that flush in one transaction. The repository never opens its own independent commit (D5: the use case will own the transaction in F2).
 
-5. **Flat entity metadata with deferred FK**:
+5. **Flat entity metadata with deferred composite FK**:
    - `WalletLedgerEntrySchema` maps `walletId` as a scalar without a declared `m:1` relation, keeping persistence records flat (MikroORM 7 removed decorator APIs; class-less `EntitySchema` matches the existing fixture pattern).
-   - Because the Unit of Work cannot infer insertion order from a scalar FK, `wallet_ledger_entry.wallet_fk` is `DEFERRABLE INITIALLY DEFERRED`: inserts may occur in any order inside the flush transaction and the constraint is still enforced atomically at commit.
-   - *Alternative*: declaring a hidden relation purely for ordering, or issuing two flushes inside a repository-level transaction — both add metadata/commit complexity without strengthening integrity.
+   - Because the Unit of Work cannot infer insertion order from a scalar FK, the FK is `DEFERRABLE INITIALLY DEFERRED`: inserts may occur in any order inside the flush transaction and the constraint is still enforced atomically at commit.
+   - The FK is **composite**: `wallet_ledger_entry (wallet_id, currency) → wallet (id, currency)`, with `UNIQUE (id, currency)` added on `wallet` as the target. It simultaneously enforces wallet existence and the README invariant that the operation currency equals the wallet currency — direct SQL with a divergent currency fails with `23503` even when every row-level check passes.
+   - *Alternatives*: declaring a hidden relation purely for ordering, or issuing two flushes inside a repository-level transaction — both add metadata/commit complexity without strengthening integrity; a separate CHECK comparing currencies is impossible across tables without an FK.
 
 6. **Two-layer append-only enforcement**:
    - Layer 1 — `wagering_app` receives only `SELECT`/`INSERT` grants on the ledger, so `UPDATE`/`DELETE`/`TRUNCATE` fail with `42501` before touching triggers.
@@ -49,6 +50,18 @@ The foundation layer established the LocalStack and PostgreSQL infrastructure al
 
 7. **Runtime immutability**:
    - `Money` and `WalletLedgerEntry` are `Object.freeze`d in their constructors/factories so accidental mutation fails at runtime in development and tests. `Wallet` is deliberately **not** frozen: F2 will mutate balance/version through domain methods.
+
+8. **Opening correspondence validated in the repository**:
+   - `WalletRepository.saveOpen` rejects, before scheduling any row: a positive-balance wallet without its entry, a zero-balance wallet with an entry, a negative balance, and any pair disagreement on wallet id, currency (all three money fields), operation (`OPENING`), direction (`CREDIT`), starting balance (zero) and final balance (equal to the wallet balance).
+   - *Alternative*: trusting `Wallet.open` alone — insufficient because F2 and tests can reassemble pairs through `rehydrate`, which deliberately skips validation; the persistence contract must re-assert the invariant.
+
+9. **Operation/direction matrix in `WalletLedgerEntry.create`**:
+   - A whitelist maps each operation to its allowed directions: `OPENING` credit from a zero balance, `BET` debit, `WIN`/`REFUND` credit, `ROLLBACK` either direction (F2 resolves it from the referenced transaction), `LOSS` none — LOSS does not move the balance and must never produce an entry (README §7). Unrecognized operations are rejected.
+   - Kept in the domain only for now: a DB-level CHECK for the matrix would be evaluated at insert time, and its exact form is better settled together with F2, which is the first producer of non-`OPENING` entries. The currency and structural invariants already have DB enforcement.
+
+10. **F2 handoff — atomic internal `OPENING` transaction**:
+    - F1 persists the wallet row and the `OPENING` ledger entry atomically, but the ledger entry's `transactionId` currently points at an id generated for the future transaction. F2 **must** create and persist the internal `OPENING` `WagerTransaction` row in the **same SQL transaction** as the wallet and its ledger entry, so `wallet_ledger_entry.transaction_id` always references a real transaction row — no orphan references in the ledger.
+    - F2 must also extend `saveOpen`/its successor so the opening flow persists transaction + wallet + entry together, keeping the correspondence rules of decision 8.
 
 ## Risks / Trade-offs
 

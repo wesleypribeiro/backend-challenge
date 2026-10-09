@@ -180,6 +180,137 @@ test('saveOpen rolls back the wallet insert when the ledger insert fails (single
   expect((await infra.query('app', 'select id from wagering.wallet_ledger_entry where wallet_id = $1', [doomed.id])).rows).toEqual([]);
 });
 
+test('saveOpen refuses a positive-balance wallet without its OPENING entry', async () => {
+  const { walletId, playerId } = ids();
+  const { wallet, ledgerEntry } = openWallet(walletId, playerId, '25.00');
+  expect(ledgerEntry).toBeDefined();
+
+  await expect(new WalletRepository(orm.em.fork()).saveOpen(wallet))
+    .rejects.toThrow(/positive balance of 25\.00 but no OPENING ledger entry/);
+
+  expect((await infra.query('app', 'select id from wagering.wallet where id = $1', [walletId])).rows).toEqual([]);
+  expect((await infra.query('app', 'select id from wagering.wallet_ledger_entry where wallet_id = $1', [walletId])).rows).toEqual([]);
+});
+
+test('saveOpen refuses mismatched wallet/ledger opening pairs before scheduling any write', async () => {
+  const { walletId, playerId, entryId, transactionId } = ids();
+  const { wallet } = openWallet(walletId, playerId, '25.00');
+  type RehydrateState = Parameters<typeof WalletLedgerEntry.rehydrate>[0];
+  const valid: RehydrateState = {
+    id: entryId,
+    walletId,
+    transactionId,
+    operation: 'OPENING',
+    direction: LedgerDirection.Credit,
+    amount: Money.from({ amount: '25.00', currency: 'BRL' }),
+    balanceBefore: Money.zero('BRL'),
+    balanceAfter: Money.from({ amount: '25.00', currency: 'BRL' }),
+    createdAt: new Date(),
+  };
+
+  const mismatches: Array<[RehydrateState, RegExp]> = [
+    [{ ...valid, walletId: crypto.randomUUID() }, /targets wallet .* but the persisted wallet is/],
+    [{ ...valid,
+      amount: Money.from({ amount: '25.00', currency: 'USD' }),
+      balanceBefore: Money.zero('USD'),
+      balanceAfter: Money.from({ amount: '25.00', currency: 'USD' }) },
+    /amount currency USD does not match wallet currency BRL/],
+    [{ ...valid, operation: 'BET' }, /must have operation OPENING, got BET/],
+    [{ ...valid,
+      direction: LedgerDirection.Debit,
+      balanceBefore: Money.from({ amount: '25.00', currency: 'BRL' }),
+      balanceAfter: Money.zero('BRL') },
+    /must be a CREDIT, got DEBIT/],
+    [{ ...valid,
+      balanceBefore: Money.from({ amount: '5.00', currency: 'BRL' }),
+      balanceAfter: Money.from({ amount: '30.00', currency: 'BRL' }) },
+    /must start from a zero balance, got 5\.00/],
+    [{ ...valid, balanceAfter: Money.from({ amount: '24.00', currency: 'BRL' }) },
+    /does not match wallet balance 25\.00/],
+  ];
+  for (const [state, matcher] of mismatches) {
+    await expect(new WalletRepository(orm.em.fork()).saveOpen(wallet, WalletLedgerEntry.rehydrate(state)))
+      .rejects.toThrow(matcher);
+  }
+
+  expect((await infra.query('app', 'select id from wagering.wallet where id = $1', [walletId])).rows).toEqual([]);
+  expect((await infra.query('app', 'select count(*)::int as count from wagering.wallet_ledger_entry where wallet_id = $1', [walletId])).rows)
+    .toEqual([{ count: 0 }]);
+});
+
+test('saveOpen refuses a zero-balance wallet that carries a ledger entry', async () => {
+  const { walletId, playerId, entryId, transactionId } = ids();
+  const { wallet, ledgerEntry } = openWallet(walletId, playerId, '0.00');
+  expect(ledgerEntry).toBeUndefined();
+
+  const orphan = WalletLedgerEntry.rehydrate({
+    id: entryId,
+    walletId,
+    transactionId,
+    operation: 'OPENING',
+    direction: LedgerDirection.Credit,
+    amount: Money.zero('BRL'),
+    balanceBefore: Money.zero('BRL'),
+    balanceAfter: Money.zero('BRL'),
+    createdAt: new Date(),
+  });
+  await expect(new WalletRepository(orm.em.fork()).saveOpen(wallet, orphan))
+    .rejects.toThrow(/zero balance and must not carry a ledger entry/);
+
+  expect((await infra.query('app', 'select id from wagering.wallet where id = $1', [walletId])).rows).toEqual([]);
+});
+
+test('saveOpen refuses a rehydrated wallet with a negative balance', async () => {
+  const { walletId, playerId } = ids();
+  const now = new Date();
+  const negative = Wallet.rehydrate({
+    id: walletId,
+    playerId,
+    currency: 'BRL',
+    balance: Money.from({ amount: '-1.00', currency: 'BRL' }),
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await expect(new WalletRepository(orm.em.fork()).saveOpen(negative))
+    .rejects.toThrow(/cannot be persisted with a negative balance of -1\.00/);
+  expect((await infra.query('app', 'select id from wagering.wallet where id = $1', [walletId])).rows).toEqual([]);
+});
+
+test('ledger rejects rows whose currency diverges from the wallet currency (composite FK)', async () => {
+  const { walletId, playerId } = ids();
+  const { wallet, ledgerEntry } = openWallet(walletId, playerId, '40.00');
+  await new WalletRepository(orm.em.fork()).saveOpen(wallet, ledgerEntry);
+
+  // Every row-level check passes; only the composite (wallet_id, currency)
+  // key diverges from the wallet's (id, currency).
+  await expect(infra.query('app', `insert into wagering.wallet_ledger_entry
+    (id, wallet_id, transaction_id, operation, direction, amount, currency, balance_before, balance_after)
+    values ($1, $2, $3, 'OPENING', 'CREDIT', '10.00', $4, '0.00', '10.00')`,
+    [crypto.randomUUID(), walletId, crypto.randomUUID(), 'USD']))
+    .rejects.toThrow(/violates foreign key constraint "wallet_ledger_entry_wallet_currency_fk"/);
+
+  const diverged = (await infra.query('app',
+    'select count(*)::int as count from wagering.wallet_ledger_entry where wallet_id = $1 and currency <> $2',
+    [walletId, 'BRL'])).rows;
+  expect(diverged).toEqual([{ count: 0 }]);
+
+  const constraints = (await infra.query('app', `
+    select c.conname, c.contype, c.condeferrable, c.condeferred,
+           array_agg(a.attname order by a.attnum) as columns
+    from pg_constraint c
+    join unnest(c.conkey) with ordinality as key(attnum, ord) on true
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = key.attnum
+    where c.conname in ('wallet_id_currency_unique', 'wallet_ledger_entry_wallet_currency_fk')
+    group by c.conname, c.contype, c.condeferrable, c.condeferred
+    order by c.conname`)).rows;
+  expect(constraints).toEqual([
+    { conname: 'wallet_id_currency_unique', contype: 'u', condeferrable: false, condeferred: false, columns: '{id,currency}' },
+    { conname: 'wallet_ledger_entry_wallet_currency_fk', contype: 'f', condeferrable: true, condeferred: true, columns: '{wallet_id,currency}' },
+  ]);
+});
+
 test('ledger table rejects UPDATE, DELETE and TRUNCATE via grants (app) and triggers (all roles)', async () => {
   const { walletId, playerId } = ids();
   const { wallet, ledgerEntry } = openWallet(walletId, playerId, '15.00');

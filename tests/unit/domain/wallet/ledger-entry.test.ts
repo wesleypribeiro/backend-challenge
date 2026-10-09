@@ -4,6 +4,7 @@ import {
   LedgerDirection,
   WalletLedgerEntry,
   type CreateWalletLedgerEntryProps,
+  type WalletLedgerOperation,
 } from '../../../../src/domain/wallet/ledger-entry.js';
 
 const creditProps = (overrides: Partial<CreateWalletLedgerEntryProps> = {}): CreateWalletLedgerEntryProps => ({
@@ -74,6 +75,90 @@ test('create rejects mixed currencies across amount and balances', () => {
   expect(() => WalletLedgerEntry.create(creditProps({
     amount: Money.from({ amount: '10.00', currency: 'USD' }),
   }))).toThrow(/currency mismatch/i);
+});
+
+test('create rejects LOSS because it never produces a ledger entry', () => {
+  expect(() => WalletLedgerEntry.create(creditProps({ operation: 'LOSS' })))
+    .toThrow(/operation LOSS must not produce a ledger entry/);
+  expect(() => WalletLedgerEntry.create(creditProps({
+    operation: 'LOSS',
+    direction: LedgerDirection.Debit,
+    balanceBefore: Money.from({ amount: '10.00', currency: 'BRL' }),
+    balanceAfter: Money.zero('BRL'),
+  }))).toThrow(/operation LOSS must not produce a ledger entry/);
+});
+
+test('create rejects invalid operation/direction combinations', () => {
+  expect(() => WalletLedgerEntry.create(creditProps({
+    direction: LedgerDirection.Debit,
+    balanceBefore: Money.from({ amount: '10.00', currency: 'BRL' }),
+    balanceAfter: Money.zero('BRL'),
+  }))).toThrow(/OPENING cannot be DEBIT/);
+
+  expect(() => WalletLedgerEntry.create(creditProps({
+    operation: 'BET',
+    direction: LedgerDirection.Credit,
+    balanceBefore: Money.zero('BRL'),
+    balanceAfter: Money.from({ amount: '10.00', currency: 'BRL' }),
+  }))).toThrow(/BET cannot be CREDIT/);
+
+  expect(() => WalletLedgerEntry.create(creditProps({
+    operation: 'WIN',
+    direction: LedgerDirection.Debit,
+    balanceBefore: Money.from({ amount: '10.00', currency: 'BRL' }),
+    balanceAfter: Money.zero('BRL'),
+  }))).toThrow(/WIN cannot be DEBIT/);
+
+  expect(() => WalletLedgerEntry.create(creditProps({
+    operation: 'REFUND',
+    direction: LedgerDirection.Debit,
+    balanceBefore: Money.from({ amount: '10.00', currency: 'BRL' }),
+    balanceAfter: Money.zero('BRL'),
+  }))).toThrow(/REFUND cannot be DEBIT/);
+});
+
+test('create rejects an OPENING entry that does not start from a zero balance', () => {
+  expect(() => WalletLedgerEntry.create(creditProps({
+    balanceBefore: Money.from({ amount: '5.00', currency: 'BRL' }),
+    balanceAfter: Money.from({ amount: '15.00', currency: 'BRL' }),
+  }))).toThrow(/OPENING requires a zero balance before, got 5.00/);
+});
+
+test('create accepts both balanced ROLLBACK directions for F2 reversals', () => {
+  const credit = WalletLedgerEntry.create(creditProps({
+    operation: 'ROLLBACK',
+    direction: LedgerDirection.Credit,
+    balanceBefore: Money.from({ amount: '10.00', currency: 'BRL' }),
+    balanceAfter: Money.from({ amount: '20.00', currency: 'BRL' }),
+  }));
+  expect(credit.operation).toBe('ROLLBACK');
+  expect(credit.isCredit()).toBe(true);
+  expect(credit.isBalanced()).toBe(true);
+
+  const debit = WalletLedgerEntry.create(creditProps({
+    operation: 'ROLLBACK',
+    direction: LedgerDirection.Debit,
+    balanceBefore: Money.from({ amount: '15.00', currency: 'BRL' }),
+    balanceAfter: Money.from({ amount: '5.00', currency: 'BRL' }),
+  }));
+  expect(debit.operation).toBe('ROLLBACK');
+  expect(debit.isDebit()).toBe(true);
+  expect(debit.isBalanced()).toBe(true);
+});
+
+test('create rejects operations outside the domain vocabulary', () => {
+  expect(() => WalletLedgerEntry.create(creditProps({
+    operation: 'TRANSFER' as WalletLedgerOperation,
+  }))).toThrow(/operation is not recognized: TRANSFER/);
+});
+
+test('create accepts the remaining valid credit operations (WIN, REFUND)', () => {
+  for (const operation of ['WIN', 'REFUND'] as const) {
+    const entry = WalletLedgerEntry.create(creditProps({ operation }));
+    expect(entry.operation).toBe(operation);
+    expect(entry.isCredit()).toBe(true);
+    expect(entry.isBalanced()).toBe(true);
+  }
 });
 
 test('rehydrate restores persisted state without revalidating', () => {

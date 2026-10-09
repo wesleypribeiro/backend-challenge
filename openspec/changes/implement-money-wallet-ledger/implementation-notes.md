@@ -39,9 +39,9 @@ openspec validate implement-money-wallet-ledger --type change --strict --no-inte
 |---|---|
 | `bun run typecheck` | Exit 0, TypeScript strict sem relaxamento |
 | `bun run build` | Exit 0, ESM emitido em `dist/` |
-| `bun run test:unit` (`./tests/unit ./tests/smoke`) | **89 pass, 0 fail, 392 asserções**, 11 arquivos |
-| `DOCKER_CONTEXT=default bun run test:integration` | **24 pass, 0 fail, 311 asserções**, 5 arquivos, PostgreSQL/LocalStack reais |
-| `DOCKER_CONTEXT=default bun test ./tests/docker/migrations.test.ts ./tests/docker/compose.test.ts` | **2 pass, 0 fail**, 158 s; imagem + ciclo de migrations no container |
+| `bun run test:unit` (`./tests/unit ./tests/smoke`) | **95 pass, 0 fail, 412 asserções**, 11 arquivos |
+| `DOCKER_CONTEXT=default bun run test:integration` | **29 pass, 0 fail**, 5 arquivos, PostgreSQL/LocalStack reais (101,03 s) |
+| `DOCKER_CONTEXT=default bun test ./tests/docker/migrations.test.ts ./tests/docker/compose.test.ts` | **2 pass, 0 fail**, 53,89 s; imagem + ciclo de migrations no container |
 | `openspec validate implement-money-wallet-ledger --type change --strict --no-interactive` | Change válida, exit 0 |
 
 ## Testes executados (cobertura nova)
@@ -62,6 +62,20 @@ Nenhum teste existente foi removido ou enfraquecido para passar; as alterações
 4. **Ciclo de migrations estourava 5 s** — o ciclo completo com duas migrations faz ~10 spawns de `bun run db:*` e excedeu o timeout default do Bun Test (5 s; o `timeout` do `bunfig.toml` não surtiu efeito). Timeout explícito de 60 s adicionado ao teste, padrão já usado em `tests/docker/*.test.ts`.
 5. **Contaminação ambiental no `node_modules`** — a extensão VS Code Console Ninja injetou um hook `/* build-hook-start */.../* build-hook-end */` no topo de `node_modules/@nestjs/core/index.js`, que imprimia banner no stdout dos testes smoke e mantinha handles abertos (12 falhas de bootstrap/shutdown/config/logging por timeout e JSON parse). Confirmado que apenas esse arquivo estava infectado; o bloco foi removido e as suites voltaram a ficar verdes. Não é alteração de código do projeto; uma reinstalação de dependências também o removeria.
 6. **Revisão independente (10 problemas)** — corrigidos os itens 1–9 no código/testes (referências `migrationNames`, Docker tests com duas migrations, triggers vs. event triggers/rules, limites `NUMERIC(20,2)` no domínio, `Object.freeze`, `saveOpen` com flush único, testes de integração novos, sem remoção de testes) e o item 10 nos artefatos desta pasta (`tasks.md`, `design.md`, duas specs e este registro).
+
+## Rodada final de revisão — três lacunas de integridade (após `96e0b90`)
+
+Nenhuma verificação anterior foi removida ou enfraquecida; os testes novos foram acrescentados aos existentes. Nada de F2 foi implementado.
+
+1. **Correspondência wallet/ledger no `saveOpen`** — `WalletRepository.assertOpeningPair` valida, antes de agendar qualquer linha: saldo negativo rejeitado; saldo positivo exige a entry `OPENING` (e saldo zero a proíbe); walletId igual; moeda da wallet igual à de amount/balanceBefore/balanceAfter; operação `OPENING`; direção `CREDIT`; `balanceBefore` zero; `balanceAfter` igual ao saldo da wallet. Cinco testes negativos reais em `wallet-ledger.test.ts` (par positivo sem entry, seis divergências de par via `rehydrate`, zero com entry, wallet negativa) — todos rejeitam e asserem que **nenhuma linha** foi escrita.
+2. **Consistência de moeda no banco** — migration `Migration20261009000200` (editada no lugar, sobre ambiente descartável) agora cria `UNIQUE (id, currency)` em `wallet` e troca a FK simples pela composta `wallet_ledger_entry (wallet_id, currency) → wallet (id, currency) DEFERRABLE INITIALLY DEFERRED`. Teste SQL direto com `currency = 'USD'` em wallet BRL rejeita com `23503` nomeando `wallet_ledger_entry_wallet_currency_fk`, nenhuma linha divergente persiste, e o teste confere em `pg_constraint` as colunas (`{wallet_id,currency}`), `contype='f'`, `condeferrable`/`condeferred` verdadeiros e o alvo `wallet_id_currency_unique` (`{id,currency}`). Validação equivalente também existe no domínio/repositório (item 1). O ciclo completo up/down/up foi exercitado nos testes de integração e Docker com a migration nova.
+3. **Matriz operação/direção em `WalletLedgerEntry.create`** — whitelist `LEDGER_OPERATION_DIRECTIONS`: `OPENING`→CREDIT (e exige saldo anterior zero), `BET`→DEBIT, `WIN`/`REFUND`→CREDIT, `ROLLBACK`→ambas as direções (F2 resolve pela referência), `LOSS`→nenhuma (nunca gera lançamento, README §7), operação desconhecida rejeitada. Seis testes unitários novos cobrem LOSS, combinações inválidas, saldo anterior do OPENING, as duas direções de ROLLBACK, WIN/REFUND e vocabulário desconhecido.
+
+Decisão registrada em `design.md` (D9): a matriz ficou apenas no domínio nesta change; uma CHECK de banco para a matriz deve ser definida junto com a F2, que é a primeira produtora de entradas não-`OPENING`. As invariantes estruturais e de moeda já têm validação no banco.
+
+## Pendência registrada para a F2 — transação interna `OPENING`
+
+A F2 deverá **criar e persistir a transação financeira interna `OPENING` de maneira atômica** (mesma transação SQL que wallet + lançamento), de modo que `wallet_ledger_entry.transaction_id` sempre aponte para uma linha real de transação — **sem deixar referências órfãs no ledger**. O `transactionId` gerado na abertura da F1 é o placeholder dessa transação; `design.md` D10 registra o repasse.
 
 ## Arquivos alterados
 
@@ -96,7 +110,7 @@ Removido (na mesma sessão anterior, movido para a plataforma): `src/domain/wall
 
 ## Pendências reais
 
-- F2 (transações, idempotência, outbox, locking pessimista com `version`) e endpoints financeiros: fora do escopo desta change.
+- F2 (transações, idempotência, outbox, locking pessimista com `version`) e endpoints financeiros: fora do escopo desta change. Em particular, a F2 deverá criar e persistir a transação interna `OPENING` atomicamente com wallet + lançamento, sem referências órfãs no ledger (seção acima e `design.md` D10).
 - `ARCHITECTURE.md` ainda afirma que "não existem tabelas financeiras" e precisa de atualização na troca de F1 para produção.
 - Nenhum commit foi criado; a validação final e este registro não substituem revisão/commit pelo responsável.
 - `bunfig.toml` define `timeout = 20_000` sob `[test]`, mas o Bun 1.4.2 aplicou 5 s na prática — investigar/corrigir separadamente se outros testes longos passarem a falhar.

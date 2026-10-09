@@ -28,10 +28,29 @@ export interface WalletLedgerEntryState extends Omit<CreateWalletLedgerEntryProp
 }
 
 /**
+ * Directions each operation may produce (README §7):
+ * - OPENING is an internal credit from a zero balance;
+ * - BET debits; WIN and REFUND credit;
+ * - LOSS never produces a ledger entry (it does not move the balance);
+ * - ROLLBACK inverts the referenced transaction, so its direction is only
+ *   known once F2 resolves the reference — both directions are valid here.
+ */
+const LEDGER_OPERATION_DIRECTIONS: Record<WalletLedgerOperation, readonly LedgerDirection[]> = {
+  OPENING: [LedgerDirection.Credit],
+  BET: [LedgerDirection.Debit],
+  WIN: [LedgerDirection.Credit],
+  LOSS: [],
+  REFUND: [LedgerDirection.Credit],
+  ROLLBACK: [LedgerDirection.Debit, LedgerDirection.Credit],
+};
+
+/**
  * Append-only ledger entry. Structurally immutable: private constructor, all
  * readonly fields, no transition methods. `create` validates the arithmetic
- * (balanceBefore ± amount === balanceAfter); `rehydrate` rebuilds persisted
- * state without revalidating.
+ * (balanceBefore ± amount === balanceAfter), the operation/direction matrix
+ * (LOSS and invalid combinations are rejected; OPENING must credit from a
+ * zero balance), and a single currency across amount and balances;
+ * `rehydrate` rebuilds persisted state without revalidating.
  */
 export class WalletLedgerEntry {
   private constructor(
@@ -56,6 +75,24 @@ export class WalletLedgerEntry {
     if (props.amount.currency !== currency || props.balanceAfter.currency !== currency) {
       throw new Error(
         `Ledger entry currency mismatch: before=${props.balanceBefore.currency}, amount=${props.amount.currency}, after=${props.balanceAfter.currency}`,
+      );
+    }
+    const allowedDirections: readonly LedgerDirection[] | undefined =
+      LEDGER_OPERATION_DIRECTIONS[props.operation];
+    if (!allowedDirections) {
+      throw new Error(`Ledger entry operation is not recognized: ${String(props.operation)}`);
+    }
+    if (allowedDirections.length === 0) {
+      throw new Error(`Ledger entry operation ${props.operation} must not produce a ledger entry`);
+    }
+    if (!allowedDirections.includes(props.direction)) {
+      throw new Error(
+        `Ledger entry operation/direction combination is invalid: ${props.operation} cannot be ${props.direction}`,
+      );
+    }
+    if (props.operation === 'OPENING' && !props.balanceBefore.isZero()) {
+      throw new Error(
+        `Ledger entry OPENING requires a zero balance before, got ${props.balanceBefore.amountString}`,
       );
     }
     const entry = new WalletLedgerEntry(

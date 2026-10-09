@@ -12,10 +12,13 @@ import { Migration } from '@mikro-orm/migrations';
  *     INSTEAD NOTHING rules would report success)
  *   - triggers (not event triggers) keep the migration runnable inside the
  *     transactional migrator; CREATE EVENT TRIGGER cannot run in a transaction
- *   - FK wallet_ledger_entry.wallet_id -> wallet.id, DEFERRABLE INITIALLY
- *     DEFERRED so a single Unit of Work flush may insert wallet and ledger in
- *     any order inside one transaction; the constraint is still enforced at
- *     commit and violations remain atomic (whole flush rolls back)
+ *   - FK wallet_ledger_entry (wallet_id, currency) -> wallet (id, currency),
+ *     DEFERRABLE INITIALLY DEFERRED: the composite key rejects ledger rows
+ *     whose currency diverges from the wallet currency (README invariant),
+ *     and the deferral lets a single Unit of Work flush insert wallet and
+ *     ledger in any order inside one transaction; the constraint is still
+ *     enforced at commit and violations remain atomic (whole flush rolls
+ *     back). wallet gains UNIQUE (id, currency) as the FK target.
  *   - at most one ledger entry per wallet per transaction (UNIQUE)
  *   - direction IN ('DEBIT','CREDIT'); amount > 0; balance_before >= 0;
  *     balance_after = balance_before ± amount; balance_after >= 0
@@ -36,7 +39,8 @@ export class Migration20261009000200 extends Migration {
         updated_at TIMESTAMPTZ   NOT NULL DEFAULT now(),
         CONSTRAINT wallet_pkey PRIMARY KEY (id),
         CONSTRAINT wallet_balance_non_negative CHECK (balance >= 0),
-        CONSTRAINT wallet_player_currency_unique UNIQUE (player_id, currency)
+        CONSTRAINT wallet_player_currency_unique UNIQUE (player_id, currency),
+        CONSTRAINT wallet_id_currency_unique UNIQUE (id, currency)
       )
     `);
 
@@ -53,8 +57,8 @@ export class Migration20261009000200 extends Migration {
         balance_after  NUMERIC(20,2) NOT NULL,
         created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
         CONSTRAINT wallet_ledger_entry_pkey PRIMARY KEY (id),
-        CONSTRAINT wallet_ledger_entry_wallet_fk
-          FOREIGN KEY (wallet_id) REFERENCES wagering.wallet(id)
+        CONSTRAINT wallet_ledger_entry_wallet_currency_fk
+          FOREIGN KEY (wallet_id, currency) REFERENCES wagering.wallet(id, currency)
           DEFERRABLE INITIALLY DEFERRED,
         CONSTRAINT wallet_ledger_entry_transaction_unique
           UNIQUE (wallet_id, transaction_id),
