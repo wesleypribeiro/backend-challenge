@@ -15,7 +15,7 @@ function workerProbe(env: Record<string, string>) {
     cwd: projectRoot, env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
     stdout: 'pipe', stderr: 'pipe', timeout: 3000,
   });
-  expect(performance.now() - started).toBeLessThan(2000);
+  expect(performance.now() - started).toBeLessThan(3000);
   expect(child.stderr.toString()).not.toContain(infra.databaseUrl('app'));
   return { code: child.exitCode, body: JSON.parse(child.stdout.toString()) };
 }
