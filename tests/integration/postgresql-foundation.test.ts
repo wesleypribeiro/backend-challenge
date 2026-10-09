@@ -17,7 +17,7 @@ const { WorkerDatabaseContext } = await compiled<typeof import('../../src/platfo
 const { JsonLogger } = await compiled<typeof import('../../src/platform/logging/json-logger.js')>('dist/platform/logging/json-logger.js');
 const { DatabaseController } = await compiled<typeof import('../fixtures/database-controller.js')>('.test-dist/database-controller.js');
 const quiet = (role: 'api' | 'worker') => new JsonLogger(role, () => {});
-const migrationName = 'Migration20261009000100';
+const migrationNames = ['Migration20261009000100', 'Migration20261009000200'] as const;
 async function barrier(promise: Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

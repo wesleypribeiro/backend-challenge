@@ -1,5 +1,6 @@
 import { defineConfig } from '@mikro-orm/postgresql';
 import type { ConfigurationByRole } from '../config/configuration.js';
+import { WalletSchema, WalletLedgerEntrySchema } from './schemas.js';
 
 export function ormOptions(database: ConfigurationByRole['api']['database']) {
   const url = new URL(database.url);
@@ -12,7 +13,7 @@ export function ormOptions(database: ConfigurationByRole['api']['database']) {
     password: decodeURIComponent(url.password),
     dbName: decodeURIComponent(url.pathname.slice(1)),
     schema: 'wagering',
-    entities: [],
+    entities: [WalletSchema, WalletLedgerEntrySchema],
     discovery: { warnWhenNoEntities: false },
     allowGlobalContext: false,
     preferEnvVars: false,
