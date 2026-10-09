@@ -59,14 +59,15 @@ test('compiled migration cycle up/up/down/up preserves history, refuses nonempty
     expect(result.code).toBe(0);
     return JSON.parse(result.stdout) as { executed: string[]; pending: string[] };
   };
-  expect(status()).toMatchObject({ executed: [], pending: [migrationName] });
+  expect(status()).toMatchObject({ executed: [], pending: [...migrationNames] });
   expect(runMigration(infra, 'migrate').code).toBe(0);
   const first = (await infra.query('app', 'select * from public.mikro_orm_migrations')).rows;
-  expect(first.map((row) => row.name)).toEqual([migrationName]);
+  expect(first.map((row) => row.name)).toEqual([...migrationNames]);
   expect(runMigration(infra, 'migrate').code).toBe(0);
   expect((await infra.query('app', 'select * from public.mikro_orm_migrations')).rows).toEqual(first);
-  expect(status()).toMatchObject({ executed: [migrationName], pending: [] });
-  expect((await infra.query('app', "select table_name from information_schema.tables where table_schema = 'wagering'")).rows).toEqual([]);
+  expect(status()).toMatchObject({ executed: [...migrationNames], pending: [] });
+  expect((await infra.query('app', "select table_name from information_schema.tables where table_schema = 'wagering' order by table_name")).rows)
+    .toEqual([{ table_name: 'wallet' }, { table_name: 'wallet_ledger_entry' }]);
   expect((await infra.query('app', "select pg_get_userbyid(nspowner) as owner, has_schema_privilege(current_user, 'wagering', 'USAGE') as usage, has_schema_privilege(current_user, 'wagering', 'CREATE') as create from pg_namespace where nspname = 'wagering'")).rows)
     .toEqual([{ owner: 'wagering_migrator', usage: true, create: false }]);
   for (const sql of [
@@ -78,7 +79,9 @@ test('compiled migration cycle up/up/down/up preserves history, refuses nonempty
   ]) await expect(infra.query('app', sql)).rejects.toMatchObject({ code: '42501' });
 
   expect(runMigration(infra, 'rollback').code).toBe(0);
-  expect(status()).toMatchObject({ executed: [], pending: [migrationName] });
+  expect(status()).toMatchObject({ executed: [migrationNames[0]], pending: [migrationNames[1]] });
+  expect(runMigration(infra, 'rollback').code).toBe(0);
+  expect(status()).toMatchObject({ executed: [], pending: [...migrationNames] });
   expect((await infra.query('app', "select to_regnamespace('wagering') as schema")).rows).toEqual([{ schema: null }]);
   expect((await infra.query('app', 'select * from public.mikro_orm_migrations')).rows).toEqual([]);
   expect(runMigration(infra, 'migrate').code).toBe(0);
@@ -86,18 +89,21 @@ test('compiled migration cycle up/up/down/up preserves history, refuses nonempty
 
   await infra.query('migrator', 'create table wagering.extra_object (id integer); insert into wagering.extra_object values (42)');
   await expect(infra.query('app', 'drop table wagering.extra_object')).rejects.toMatchObject({ code: '42501' });
+  expect(runMigration(infra, 'rollback').code).toBe(0);
   const refused = runMigration(infra, 'rollback');
   expect(refused.code).toBe(1);
   expect(refused.stderr).toContain('migration.failed');
   expect((await infra.query('migrator', 'select * from wagering.extra_object')).rows).toEqual([{ id: 42 }]);
-  expect((await infra.query('app', 'select * from public.mikro_orm_migrations')).rows).toEqual(reapplied);
+  expect((await infra.query('app', 'select * from public.mikro_orm_migrations')).rows)
+    .toEqual(reapplied.filter((row) => row.name === migrationNames[0]));
   await infra.query('migrator', 'drop table wagering.extra_object');
-  expect(status()).toMatchObject({ executed: [migrationName], pending: [] });
+  expect(runMigration(infra, 'migrate').code).toBe(0);
+  expect(status()).toMatchObject({ executed: [...migrationNames], pending: [] });
   const unauthorized = runMigration(infra, 'migrate', { MIGRATION_DATABASE_URL: infra.databaseUrl('app') });
   expect(unauthorized.code).toBe(1);
   expect(unauthorized.stderr).toContain('ConfigurationError');
   expect(unauthorized.stderr).not.toContain(infra.databaseUrl('app'));
-});
+}, 60_000);
 
 test('worker executions isolate entities and transactions, rollback every write, then discard the failed context', async () => {
   await infra.query('migrator', persistenceFixtureSql);

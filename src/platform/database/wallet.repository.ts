@@ -1,5 +1,6 @@
 import type { EntityManager } from '@mikro-orm/postgresql';
-import type { Wallet, WalletLedgerEntry } from '../../domain/wallet/wallet.js';
+import type { Wallet } from '../../domain/wallet/wallet.js';
+import type { WalletLedgerEntry } from '../../domain/wallet/ledger-entry.js';
 import {
   WalletSchema,
   fromWalletDomain,

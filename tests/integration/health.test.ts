@@ -64,7 +64,8 @@ test('public HTTP and worker checks reflect preparation, recover without restart
     await infra.sqs.send(new SetQueueAttributesCommand({ QueueUrl: QueueUrl!, Attributes: { VisibilityTimeout: '60' } }));
     await check({ postgresql: 'up', sqs: 'up' });
     expect((await infra.query('app', 'SELECT * FROM public.mikro_orm_migrations ORDER BY id')).rows).toEqual(history);
-    expect((await infra.query('app', "SELECT tablename FROM pg_tables WHERE schemaname='wagering'")).rows).toEqual([]);
+    expect((await infra.query('app', "SELECT tablename FROM pg_tables WHERE schemaname='wagering' ORDER BY tablename")).rows)
+      .toEqual([{ tablename: 'wallet' }, { tablename: 'wallet_ledger_entry' }]);
     const message = await receiveTechnicalMessage(infra.sqs, QueueUrl!);
     expect(message.MessageId).toBe(sent.MessageId);
     expect(message.Body).toBe('technical-health-preservation');

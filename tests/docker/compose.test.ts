@@ -54,9 +54,10 @@ test('compiled Compose foundation gates startup, scales three workers, probes an
     const ready = await fetch(`${origin}/health/ready`);
     expect(ready.status).toBe(200);
     expect(await ready.json()).toEqual({ status: 'ok', checks: { postgresql: 'up', sqs: 'up' } });
-    const history = (await infra.query('app', 'SELECT name FROM public.mikro_orm_migrations')).rows;
-    expect(history).toEqual([{ name: 'Migration20261009000100' }]);
-    expect((await infra.query('app', "SELECT tablename FROM pg_tables WHERE schemaname='wagering'")).rows).toEqual([]);
+    const history = (await infra.query('app', 'SELECT name FROM public.mikro_orm_migrations ORDER BY name')).rows;
+    expect(history).toEqual([{ name: 'Migration20261009000100' }, { name: 'Migration20261009000200' }]);
+    expect((await infra.query('app', "SELECT tablename FROM pg_tables WHERE schemaname='wagering' ORDER BY tablename")).rows)
+      .toEqual([{ tablename: 'wallet' }, { tablename: 'wallet_ledger_entry' }]);
     const { QueueUrl } = await infra.sqs.send(new GetQueueUrlCommand({ QueueName: infra.queueName }));
     const sent = await infra.sqs.send(new SendMessageCommand({
       QueueUrl: QueueUrl!, MessageBody: 'technical-scaffold-does-not-consume',

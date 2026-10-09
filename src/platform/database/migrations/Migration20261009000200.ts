@@ -12,7 +12,13 @@ import { Migration } from '@mikro-orm/migrations';
  *     INSTEAD NOTHING rules would report success)
  *   - triggers (not event triggers) keep the migration runnable inside the
  *     transactional migrator; CREATE EVENT TRIGGER cannot run in a transaction
- *   - FK wallet_ledger_entry.wallet_id -> wallet.id
+ *   - FK wallet_ledger_entry.wallet_id -> wallet.id, DEFERRABLE INITIALLY
+ *     DEFERRED so a single Unit of Work flush may insert wallet and ledger in
+ *     any order inside one transaction; the constraint is still enforced at
+ *     commit and violations remain atomic (whole flush rolls back)
+ *   - at most one ledger entry per wallet per transaction (UNIQUE)
+ *   - direction IN ('DEBIT','CREDIT'); amount > 0; balance_before >= 0;
+ *     balance_after = balance_before ± amount; balance_after >= 0
  *   - NUMERIC(20,2) for all monetary columns
  *
  * Reversible: down() drops triggers/function first, then tables in dependency order.
@@ -21,11 +27,13 @@ export class Migration20261009000200 extends Migration {
   override async up(): Promise<void> {
     this.addSql(`
       CREATE TABLE wagering.wallet (
-        id         UUID         NOT NULL,
-        player_id  UUID         NOT NULL,
-        currency   CHAR(3)      NOT NULL,
+        id         UUID          NOT NULL,
+        player_id  UUID          NOT NULL,
+        currency   CHAR(3)       NOT NULL,
         balance    NUMERIC(20,2) NOT NULL,
         version    INTEGER       NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ   NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ   NOT NULL DEFAULT now(),
         CONSTRAINT wallet_pkey PRIMARY KEY (id),
         CONSTRAINT wallet_balance_non_negative CHECK (balance >= 0),
         CONSTRAINT wallet_player_currency_unique UNIQUE (player_id, currency)
@@ -34,16 +42,34 @@ export class Migration20261009000200 extends Migration {
 
     this.addSql(`
       CREATE TABLE wagering.wallet_ledger_entry (
-        id         UUID          NOT NULL,
-        wallet_id  UUID          NOT NULL,
-        operation  VARCHAR(20)   NOT NULL,
-        amount     NUMERIC(20,2) NOT NULL,
-        currency   CHAR(3)       NOT NULL,
-        created_at TIMESTAMPTZ   NOT NULL DEFAULT now(),
+        id             UUID          NOT NULL,
+        wallet_id      UUID          NOT NULL,
+        transaction_id UUID          NOT NULL,
+        operation      VARCHAR(20)   NOT NULL,
+        direction      VARCHAR(8)    NOT NULL,
+        amount         NUMERIC(20,2) NOT NULL,
+        currency       CHAR(3)       NOT NULL,
+        balance_before NUMERIC(20,2) NOT NULL,
+        balance_after  NUMERIC(20,2) NOT NULL,
+        created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
         CONSTRAINT wallet_ledger_entry_pkey PRIMARY KEY (id),
         CONSTRAINT wallet_ledger_entry_wallet_fk
-          FOREIGN KEY (wallet_id) REFERENCES wagering.wallet(id),
-        CONSTRAINT wallet_ledger_entry_amount_positive CHECK (amount > 0)
+          FOREIGN KEY (wallet_id) REFERENCES wagering.wallet(id)
+          DEFERRABLE INITIALLY DEFERRED,
+        CONSTRAINT wallet_ledger_entry_transaction_unique
+          UNIQUE (wallet_id, transaction_id),
+        CONSTRAINT wallet_ledger_entry_amount_positive CHECK (amount > 0),
+        CONSTRAINT wallet_ledger_entry_direction_valid
+          CHECK (direction IN ('DEBIT', 'CREDIT')),
+        CONSTRAINT wallet_ledger_entry_balance_before_non_negative
+          CHECK (balance_before >= 0),
+        CONSTRAINT wallet_ledger_entry_balance_after_non_negative
+          CHECK (balance_after >= 0),
+        CONSTRAINT wallet_ledger_entry_arithmetic_consistent
+          CHECK (
+            (direction = 'CREDIT' AND balance_after = balance_before + amount) OR
+            (direction = 'DEBIT'  AND balance_after = balance_before - amount)
+          )
       )
     `);
 

@@ -30,11 +30,25 @@ The foundation layer established the LocalStack and PostgreSQL infrastructure al
    - *Alternative*: Keeping just a snapshot. This violates the auditability and reconstructability requirement of the ledger.
 
 3. **Wallet Versioning**:
-   - `wallet.version` will be used for optimistic concurrency control. It starts at `1` and increments *only* when the balance is modified.
-   - Initial balances of `0` result in a wallet with version `1` and no ledger entry. Initial balances `> 0` result in a wallet with version `1` and a single `OPENING` ledger entry. Wait, if it starts at 1, and the balance changes from 0 to positive, the version increments to 2? No, the requirement says "Começar a versão em 1 e incrementá-la somente quando o saldo mudar". If it starts with > 0, it has a ledger entry, and version is 1? Yes, starting implies version 1.
+   - `wallet.version` starts at `1` and increments *only* when the balance is modified in future changes.
+   - Opening with `0` or a positive initial balance both produce version `1`; a positive balance additionally produces one `OPENING` ledger entry in the same flush.
+   - The column is a plain `integer` (no ORM auto-increment, no `version: true`): F2 will increment it explicitly under pessimistic locking (D7), so the domain — not the ORM — owns version transitions.
 
 4. **Persistence & Transactions**:
-   - Wallet and Ledger updates must occur in the exact same SQL transaction. MikroORM `UnitOfWork` will be used for this.
+   - Wallet and Ledger insert must occur in the same SQL transaction. `WalletRepository.saveOpen` creates both entities in a single Unit of Work and calls `em.flush()` once; MikroORM wraps that flush in one transaction. The repository never opens its own independent commit (D5: the use case will own the transaction in F2).
+
+5. **Flat entity metadata with deferred FK**:
+   - `WalletLedgerEntrySchema` maps `walletId` as a scalar without a declared `m:1` relation, keeping persistence records flat (MikroORM 7 removed decorator APIs; class-less `EntitySchema` matches the existing fixture pattern).
+   - Because the Unit of Work cannot infer insertion order from a scalar FK, `wallet_ledger_entry.wallet_fk` is `DEFERRABLE INITIALLY DEFERRED`: inserts may occur in any order inside the flush transaction and the constraint is still enforced atomically at commit.
+   - *Alternative*: declaring a hidden relation purely for ordering, or issuing two flushes inside a repository-level transaction — both add metadata/commit complexity without strengthening integrity.
+
+6. **Two-layer append-only enforcement**:
+   - Layer 1 — `wagering_app` receives only `SELECT`/`INSERT` grants on the ledger, so `UPDATE`/`DELETE`/`TRUNCATE` fail with `42501` before touching triggers.
+   - Layer 2 — `BEFORE UPDATE`/`BEFORE DELETE`/`BEFORE TRUNCATE` triggers raise an exception for **every** role, including the table owner (`wagering_migrator`), so dropping grants can never expose mutation.
+   - *Alternatives*: event triggers (cannot run inside the migration transaction), `INSTEAD OF NOTHING` rules (do not actually reject), or grants alone (owner bypasses them).
+
+7. **Runtime immutability**:
+   - `Money` and `WalletLedgerEntry` are `Object.freeze`d in their constructors/factories so accidental mutation fails at runtime in development and tests. `Wallet` is deliberately **not** frozen: F2 will mutate balance/version through domain methods.
 
 ## Risks / Trade-offs
 

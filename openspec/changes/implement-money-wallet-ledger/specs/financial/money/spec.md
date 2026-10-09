@@ -20,6 +20,10 @@ The system MUST represent money using exact decimals up to two decimal places, r
 - **WHEN** a Money object is instantiated with scientific notation (e.g., "1e2")
 - **THEN** it is rejected
 
+#### Scenario: Amount beyond column capacity rejected
+- **WHEN** a Money object is instantiated with an integer part larger than NUMERIC(20,2) allows (e.g., "100000000000000000000.00")
+- **THEN** it is rejected instead of overflowing or being silently truncated
+
 ### Requirement: Currency Isolation
 Money objects MUST belong to an ISO 4217 currency. Operations between different currencies are prohibited.
 
