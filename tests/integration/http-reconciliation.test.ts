@@ -2,7 +2,8 @@ import 'reflect-metadata';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { TestInfrastructure } from '../support/infrastructure.js';
 import { runMigration } from '../support/migrations.js';
-import { apiJson, seedWallet, startApi, type RunningApi } from '../support/api.js';
+import { assertLedgerInvariant } from '../support/invariants.js';
+import { apiJson, postJson, seedWallet, startApi, type RunningApi } from '../support/api.js';
 
 let infra: TestInfrastructure;
 let api: RunningApi;
@@ -103,5 +104,64 @@ test('a zero-balance wallet with no entries reconciles as consistent', async () 
     consistent: true,
     checkedEntries: 0,
     difference: { amount: '0.00', currency: 'BRL' },
+  });
+});
+
+test('reconciliation racing concurrent bets never observes a false divergence', async () => {
+  const { walletId, playerId } = await seedWallet(origin, '100.00');
+
+  // Four BETs and four reconciliations run truly concurrently on the same
+  // wallet. Every bet commits wallet+ledger+transaction atomically (F2); a
+  // single-statement reconciliation snapshot therefore always sees a state
+  // where stored balance equals ledger sum — every response must be
+  // consistent, regardless of interleaving. Explicit Promise.all
+  // synchronization; no sleeps.
+  const bet = (index: number) => apiJson(`${origin}/wagering/transactions`, postJson(
+    `${origin}/wagering/transactions`,
+    {
+      providerId: 'acme',
+      externalTransactionId: `burst-bet-${index}-${walletId}`,
+      playerId,
+      walletId,
+      roundId: `r-burst-${index}`,
+      gameId: 'blackjack',
+      kind: 'BET',
+      money: { amount: '10.00', currency: 'BRL' },
+    },
+    { 'idempotency-key': `burst-key-${index}-${walletId}` },
+  ));
+  const reconcile = () => apiJson(`${origin}/wallets/${walletId}/reconciliation`, { method: 'POST' });
+
+  const [bets, reconciliations] = await Promise.all([
+    Promise.all([bet(1), bet(2), bet(3), bet(4)]),
+    Promise.all([reconcile(), reconcile(), reconcile(), reconcile()]),
+  ]);
+
+  for (const submitted of bets) {
+    expect(submitted.status).toBe(200);
+    expect(submitted.body).toMatchObject({ status: 'PROCESSED', idempotentReplay: false });
+  }
+  for (const reconciled of reconciliations) {
+    expect(reconciled.status).toBe(200);
+    // No mixed reading is ever acceptable: stored always equals calculated.
+    expect(reconciled.body).toMatchObject({
+      consistent: true,
+      difference: { amount: '0.00', currency: 'BRL' },
+    });
+    expect((reconciled.body.storedBalance as { amount: string }).amount)
+      .toBe((reconciled.body.calculatedBalance as { amount: string }).amount);
+  }
+
+  // Wallet and ledger changed only through the four bets — never through
+  // reconciliation — and the reconstruction invariant holds.
+  const wallet = (await infra.query('app',
+    'select balance, version from wagering.wallet where id = $1', [walletId])).rows;
+  expect(wallet).toEqual([{ balance: '60.00', version: 5 }]);
+  await assertLedgerInvariant((sql, params) => infra.query('app', sql, params), walletId);
+  const settled = await reconcile();
+  expect(settled.body).toMatchObject({
+    consistent: true,
+    checkedEntries: 5,
+    storedBalance: { amount: '60.00', currency: 'BRL' },
   });
 });

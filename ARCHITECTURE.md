@@ -1,6 +1,6 @@
 # Arquitetura — Jungle Gaming
 
-Estado: fundação P0 + F1 (`implement-money-wallet-ledger`) + F2 (`implement-wagering-transactions`) + F6 (`implement-financial-api-reconciliation`) implementadas. F3 (inbox/consumer), F4 (publisher outbox), F5 (scheduler de referências) e P1 permanecem abertos. O [README](README.md) é fonte de verdade; evidências executadas ficam em [implementation-notes.md](openspec/changes/implement-financial-api-reconciliation/implementation-notes.md).
+Estado: fundação P0 + F1 (`implement-money-wallet-ledger`) + F2 (`implement-wagering-transactions`) + F6 (`implement-financial-api-reconciliation`) implementadas; correção corretiva `stabilize-reconciliation-snapshot` aplicada (reconciliação sob snapshot único — ver D5/D7). F3 (inbox/consumer), F4 (publisher outbox), F5 (scheduler de referências) e P1 permanecem abertos. O [README](README.md) é fonte de verdade; evidências executadas ficam em [implementation-notes.md](openspec/changes/stabilize-reconciliation-snapshot/implementation-notes.md).
 
 ## D1 — Monólito modular, processos independentes
 
@@ -20,7 +20,7 @@ SIGTERM/SIGINT ativam draining, cancelam probes, param aceite HTTP, aguardam req
 
 ## D4 — Compose e preparação explícita
 
-`postgres` e `localstack` possuem healthchecks de acesso real. Jobs independentes `migrate` e `provision` antecedem API/worker por `service_completed_successfully`. Não existe schema sync ou provisionamento implícito nos processos de aplicação. Migrations financeiras (F1) criam tabelas `wagering.wallet`, `wagering.wallet_ledger_entry`, `wagering.wager_transaction`, `wagering.inbox_message`, `wagering.outbox_event` com constraints SQL (CHECK de aritmética de ledger, unicidade de efeitos, FKs) e triggers que negam UPDATE/DELETE/TRUNCATE no ledger (append-only imposto no banco). `wagering_app` não executa DDL; histórico de migrations fica em `public`.
+`postgres` e `localstack` possuem healthchecks de acesso real. Jobs independentes `migrate` e `provision` antecedem API/worker por `service_completed_successfully`. Não existe schema sync ou provisionamento implícito nos processos de aplicação. Migrations financeiras (F1/F2) criam as tabelas `wagering.wallet`, `wagering.wallet_ledger_entry`, `wagering.wager_transaction` e `wagering.outbox_event` com constraints SQL (CHECK de aritmética de ledger, unicidade de efeitos, FKs) e triggers que negam UPDATE/DELETE/TRUNCATE no ledger (append-only imposto no banco). A tabela `wagering.inbox_message` **ainda não existe**: será criada pela change F3 (inbox/consumer SQS). `wagering_app` não executa DDL; histórico de migrations fica em `public`.
 
 Desenvolvimento e testes usam projetos/redes/volumes/databases/portas/filas separados; o harness gera UUIDs e confere ownership antes de limpar.
 
@@ -29,6 +29,8 @@ Desenvolvimento e testes usam projetos/redes/volumes/databases/portas/filas sepa
 MikroORM fornece Unit of Work, Identity Map e transações explícitas. A API registra RequestContext por request (ALS); o worker usa `WorkerDatabaseContext.run` com fork/contexto limpo em `finally`. `allowGlobalContext` é falso. O use case controla a transação SQL: `ProcessWagerTransaction` abre transação explícita, aplica `SELECT ... FOR UPDATE` na wallet (pessimistic lock sob READ COMMITTED), valida regras de negócio e grava wallet + transação + ledger + outbox em um único flush (all-or-nothing). Wallets distintas avançam em paralelo; não existe mutex local nem lock global. Erros de transação abortada exigem novo contexto — o use case refaz o caminho em contexto limpo após rollback.
 
 Decisão de contrato (F1 D6/F6): `Money` é imutável, encapsula decimal exato (`decimal.js`), recebe/serializa strings de escala 2 e persiste em `NUMERIC(20,2)` + moeda; `number`/`parseFloat` nunca tocam o dinheiro. Wallet única por (player, moeda) com saldo não negativo; ledger append-only reconstrói o saldo; unicidade de idempotência (`provider_id, external_transaction_id`) e unicidade de efeitos (outbox/inbox por `eventId`) protegidas por constraints SQL. Referências (`WIN/REFUND/ROLLBACK`) usam estado `PENDING_REFERENCE` quando a referência ainda não existe; F5 tratará expiração/scheduler.
+
+Conciliação sob snapshot único (correção `stabilize-reconciliation-snapshot`): `ReconcileWallet` observa saldo materializado e soma exata do ledger em **uma única statement SQL** (`wallet` LEFT JOIN `wallet_ledger_entry`, agregado `NUMERIC`, `GROUP BY` na PK da wallet, id vinculado como parâmetro via QueryBuilder — sem `getConnection().execute()`, sem interpolação). Qualquer statement PostgreSQL opera sob um snapshot de statement, mesmo em READ COMMITTED: uma transação confirmada entre leituras parciais é impossível de produzir divergência falsa. A versão anterior (duas consultas independentes) era racy; a alternativa transação `REPEATABLE READ` foi rejeitada por exigir ciclo de transação explícito num caminho de leitura por request. Nenhum lock é adquirido — a conciliação nunca bloqueia, nem é bloqueada por, processamento financeiro de nenhuma wallet.
 
 ## D6 — Domínio financeiro (F1/F2)
 
@@ -49,7 +51,7 @@ A API financeira expõe (README §9) os sete endpoints:
 | `POST /wagering/transactions` | 200/202 | header `Idempotency-Key` obrigatório (fonte da verdade, fora do body); 409 conflito de payload; 422 regra de negócio (`failureCode`) |
 | `GET /wagering/transactions/:transactionId` | 200 | 404 se desconhecida |
 | `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | 200 | 404 se desconhecida |
-| `POST /wallets/:walletId/reconciliation` | 200 | **somente leitura**: compara saldo materializado com a soma exata do ledger em SQL; divergência → log `reconciliation.divergence` (warn) + `consistent=false`; nunca corrige |
+| `POST /wallets/:walletId/reconciliation` | 200 | **somente leitura**: compara saldo materializado com a soma exata do ledger em **uma única statement** (mesmo snapshot PostgreSQL — ver D5; concorrência não produz divergência falsa); divergência real → log `reconciliation.divergence` (warn) + `consistent=false`; nunca corrige, nunca escreve |
 
 Contrato de erro único (filter global `FinancialExceptionFilter`): corpo `{statusCode, error, code, message, field?}`. Mapeamento: 400 `INVALID_PAYLOAD` (DTO/estrutura/identificador/cursor/limit/`Idempotency-Key` ausente), 404 `NOT_FOUND`, 409 `WALLET_ALREADY_EXISTS`/`IDEMPOTENCY_CONFLICT`, 422 `TRANSACTION_REJECTED`, 202 `PENDING_REFERENCE`, 503 `SERVICE_UNAVAILABLE` (falhas transitórias de conexão/driver), 500 `INTERNAL_ERROR` (corpo genérico; stack/SQL/credenciais nunca chegam ao cliente — log server-side com correlation id). Erros `HttpException` do Nest (status dinâmicos) são repassados pelo filter.
 
@@ -67,7 +69,7 @@ Health público separa processo vivo e dependências prontas; readiness usa cone
 
 ## D10 — Evidências e testes
 
-Bun Test é o único runner. Camada unitária cobre domínio puro, use cases com EntityManager fake, parsers de DTO, mapeamento de status de submissão e o exception filter. Integração usa PostgreSQL real descartável via `TestInfrastructure` e sobe a aplicação Nest (`createApiApplication`) em porta efêmera, exercitando os endpoints HTTP com `fetch` — inclusive replay idempotente, conflito de payload, `PENDING_REFERENCE`, rejeição 422, paginação do ledger, reconciliação divergente seedada (que permanece inalterada — a rota não escreve) e 503 com `DATABASE_URL` apontando porta fechada. Smoke preserva o 404 de rota inexistente (o filter repassa `HttpException`). Docker/Compose e migrations reversíveis continuam cobertos por testes próprios.
+Bun Test é o único runner. Camada unitária cobre domínio puro, use cases com EntityManager fake, parsers de DTO, mapeamento de status de submissão e o exception filter. Integração usa PostgreSQL real descartável via `TestInfrastructure` e sobe a aplicação Nest (`createApiApplication`) em porta efêmera, exercitando os endpoints HTTP com `fetch` — inclusive replay idempotente, conflito de payload, `PENDING_REFERENCE`, rejeição 422, paginação do ledger, reconciliação divergente seedada (que permanece inalterada — a rota não escreve) e 503 com `DATABASE_URL` apontando porta fechada. Consistência de snapshot da conciliação é coberta por suíte dedicada (`reconciliation-consistency`): transação pendurada invisível até commit, corrida commit × reconciliação (toda resposta é snapshot íntegro), não-mutação de wallet/version/ledger/outbox, e rajada paralela de apostas × reconciliações em que **toda** reconciliação responde `consistent: true`. Smoke preserva o 404 de rota inexistente (o filter repassa `HttpException`). Docker/Compose e migrations reversíveis continuam cobertos por testes próprios.
 
 ## Organização dos arquivos
 
