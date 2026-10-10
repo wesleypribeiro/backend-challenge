@@ -8,6 +8,7 @@ import { loadConfiguration } from '../platform/config/configuration.js';
 import type { ConfigurationByRole } from '../platform/config/configuration.js';
 import { JsonLogger } from '../platform/logging/json-logger.js';
 import { httpLogging } from '../platform/logging/http-logging.js';
+import { FinancialExceptionFilter } from '../platform/http/financial-exception.filter.js';
 
 export async function createApiApplication(
   config: ConfigurationByRole['api'] = loadConfiguration('api'),
@@ -15,6 +16,7 @@ export async function createApiApplication(
 ): Promise<INestApplication> {
   const app = await NestFactory.create(ApiModule.register(logger, config), { abortOnError: false, logger });
   app.use(httpLogging(logger));
+  app.useGlobalFilters(new FinancialExceptionFilter(logger));
   return app;
 }
 

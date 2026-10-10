@@ -42,6 +42,38 @@ test('empty strings are rejected on every required identifier', () => {
   }
 });
 
+test('whitespace-only values are rejected on every required identifier', () => {
+  for (const field of ['providerId', 'externalTransactionId', 'idempotencyKey', 'roundId', 'gameId'] as const) {
+    expect(() => assertValidBusinessIdentifiers({ ...valid, [field]: '   ' }))
+      .toThrow(new RegExp(`${field} must not be composed only of whitespace`));
+  }
+  expect(() => assertValidBusinessIdentifiers({ ...valid, playerId: ' \t ' }))
+    .toThrow(/playerId must not be composed only of whitespace/);
+  expect(() => assertValidBusinessIdentifiers({ ...valid, walletId: '\n' }))
+    .toThrow(/walletId must not be composed only of whitespace/);
+  expect(() => assertValidBusinessIdentifiers({ ...valid, referenceExternalTransactionId: '  ' }))
+    .toThrow(/referenceExternalTransactionId must not be composed only of whitespace/);
+});
+
+test('content with surrounding spaces is accepted without normalization', () => {
+  expect(() => assertValidBusinessIdentifiers({ ...valid, externalTransactionId: ' tx-1 ' })).not.toThrow();
+});
+
+test('providerId internal is reserved for internal operations', () => {
+  try {
+    assertValidBusinessIdentifiers({ ...valid, providerId: 'internal' });
+    expect.unreachable();
+  } catch (error) {
+    expect(error).toBeInstanceOf(InvalidBusinessIdentifierError);
+    expect((error as InvalidBusinessIdentifierError).field).toBe('providerId');
+    expect((error as Error).message).toMatch(/reserved for internal operations/);
+  }
+  // Case-sensitive exact match: other providers whose name contains or
+  // extends "internal" are not reserved.
+  expect(() => assertValidBusinessIdentifiers({ ...valid, providerId: 'internal-b' })).not.toThrow();
+  expect(() => assertValidBusinessIdentifiers({ ...valid, providerId: 'Internal' })).not.toThrow();
+});
+
 test('non-string values are rejected with the field name', () => {
   expect(() => assertValidBusinessIdentifiers({ ...valid, providerId: 42 as unknown as string }))
     .toThrow(/providerId must be a string/);

@@ -45,6 +45,9 @@ const assertString = (field: string, value: unknown, maxLength: number, uuid: bo
   if (value.length === 0) {
     throw new InvalidBusinessIdentifierError(field, `${field} must not be empty`);
   }
+  if (value.trim().length === 0) {
+    throw new InvalidBusinessIdentifierError(field, `${field} must not be composed only of whitespace`);
+  }
   if (value.length > maxLength) {
     throw new InvalidBusinessIdentifierError(
       field,
@@ -57,11 +60,24 @@ const assertString = (field: string, value: unknown, maxLength: number, uuid: bo
 };
 
 /**
+ * Namespace reserved for internal operations (OPENING): never accepted from
+ * an external provider (README §9 — provider identity travels with every
+ * submission; `internal` belongs to the platform only).
+ */
+export const RESERVED_INTERNAL_PROVIDER_ID = 'internal';
+
+/**
  * Validates every business identifier of a submission. Throws on the first
  * violation; the optional reference id is validated only when informed.
  */
 export function assertValidBusinessIdentifiers(input: BusinessIdentifiersInput): void {
   assertString('providerId', input.providerId, IDENTIFIER_MAX_LENGTH.providerId, false);
+  if (input.providerId === RESERVED_INTERNAL_PROVIDER_ID) {
+    throw new InvalidBusinessIdentifierError(
+      'providerId',
+      `providerId ${JSON.stringify(RESERVED_INTERNAL_PROVIDER_ID)} is reserved for internal operations`,
+    );
+  }
   assertString(
     'externalTransactionId',
     input.externalTransactionId,

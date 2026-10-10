@@ -6,7 +6,7 @@ import { ProvisionConflict } from '../messaging/sqs/provision-conflict.js';
 
 type Level = 'info' | 'warn' | 'error' | 'debug' | 'fatal';
 type Event = 'process.draining' | 'process.starting' | 'process.started' | 'process.stopping' | 'process.stopped' |
-  'health.degraded' | 'shutdown.failed' | 'bootstrap.failed' | 'migration.failed' | 'provision.completed' | 'provision.failed' | 'http.completed' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
+  'health.degraded' | 'shutdown.failed' | 'bootstrap.failed' | 'migration.failed' | 'provision.completed' | 'provision.failed' | 'http.completed' | 'reconciliation.divergence' | 'nest.log' | 'nest.error' | 'nest.warn' | 'nest.debug' | 'nest.fatal';
 interface Details {
   checks?: { postgresql: 'up' | 'down'; sqs: 'up' | 'down' };
   port?: number;
@@ -16,8 +16,17 @@ interface Details {
   durationMs?: number;
   signal?: string;
   error?: unknown;
+  walletId?: string;
+  storedBalance?: string;
+  calculatedBalance?: string;
+  differenceAmount?: string;
+  currency?: string;
+  checkedEntries?: number;
 }
 type Sink = (line: string, level: Level) => void;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DECIMAL_PATTERN = /^-?\d+(\.\d{1,2})?$/;
 
 export class JsonLogger implements LoggerService {
   constructor(
@@ -45,6 +54,16 @@ export class JsonLogger implements LoggerService {
       postgresql: details.checks.postgresql === 'up' ? 'up' : 'down',
       sqs: details.checks.sqs === 'up' ? 'up' : 'down',
     };
+    // Reconciliation divergence: wallet identity and exact decimal amounts only.
+    if (details.walletId && UUID_PATTERN.test(details.walletId)) record.walletId = details.walletId;
+    for (const key of ['storedBalance', 'calculatedBalance', 'differenceAmount'] as const) {
+      const value = details[key];
+      if (typeof value === 'string' && DECIMAL_PATTERN.test(value)) record[key] = value;
+    }
+    if (details.currency && /^[A-Z]{3}$/.test(details.currency)) record.currency = details.currency;
+    if (typeof details.checkedEntries === 'number' && Number.isSafeInteger(details.checkedEntries) && details.checkedEntries >= 0) {
+      record.checkedEntries = details.checkedEntries;
+    }
     if (details.error !== undefined) {
       record.errorType = details.error instanceof ConfigurationError ? 'ConfigurationError' : 'Error';
       if (details.error instanceof ConfigurationError) record.variables = details.error.variables;

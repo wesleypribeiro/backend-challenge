@@ -1,94 +1,103 @@
 # Arquitetura — Jungle Gaming
 
-Estado: fundação P0 da change `bootstrap-backend-foundation`. P1 permanece aberto; não existe domínio financeiro implementado. O [README](README.md) é fonte de verdade; [design OpenSpec](openspec/changes/bootstrap-backend-foundation/design.md) preserva justificativas, invariantes, ambiguidades e a matriz S13. Evidências executadas ficam em [implementation-notes.md](openspec/changes/bootstrap-backend-foundation/implementation-notes.md).
+Estado: fundação P0 + F1 (`implement-money-wallet-ledger`) + F2 (`implement-wagering-transactions`) + F6 (`implement-financial-api-reconciliation`) implementadas. F3 (inbox/consumer), F4 (publisher outbox), F5 (scheduler de referências) e P1 permanecem abertos. O [README](README.md) é fonte de verdade; evidências executadas ficam em [implementation-notes.md](openspec/changes/implement-financial-api-reconciliation/implementation-notes.md).
 
 ## D1 — Monólito modular, processos independentes
 
-Um repositório e uma imagem compilada, com entrypoints NestJS separados para API e worker. API usa Express e oferece somente health; worker usa application context, sem listener HTTP ou consumers. Não há coordenação em memória entre processos. Os módulos futuros `wallets` e `wagering` seguirão `presentation → application → domain`; `infrastructure` implementará portas de aplicação. Domínio não dependerá de NestJS, MikroORM ou AWS SDK. Não criar interfaces, repositórios genéricos ou classes financeiras vazias por antecipação. Microservices/transações distribuídas não se justificam neste timebox.
+Um repositório e uma imagem compilada, com entrypoints NestJS separados para API e worker. API usa Express; worker usa application context, sem listener HTTP ou consumers. Não há coordenação em memória entre processos. Camadas: `domain` puro (sem Nest/MikroORM/AWS SDK), `application` (use cases com EntityManager explícito), `platform` (infra), `modules/*/http` (controllers). O use case `ProcessWagerTransaction` é a única porta de escrita de transações — o consumer SQS futuro (F3) o reutilizará sem duplicar regras. Não existem interfaces genéricas ou repositórios abstraídos por antecipação.
 
 ## D2 — Build e compatibilidade verificáveis
 
-Bun 1.4.2 é runtime, package manager e test runner. TypeScript 5.9.3 compila ESM sem bundling, com `strict`, decorators legados e metadata; imports locais terminam em `.js`. `reflect-metadata` precede a composição NestJS. NestJS 12.1.2, MikroORM 7.2.4/integração NestJS 7.1.0 e AWS SDK v3 3.1148.0 estão fixados no manifest/lockfile. Patches estritamente de declarações estão em [patches/README.md](patches/README.md).
+Bun 1.4.2 é runtime, package manager e test runner. TypeScript 5.9.3 compila ESM sem bundling, com `strict`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, decorators legados e metadata; imports locais terminam em `.js`. `reflect-metadata` precede a composição NestJS. NestJS, MikroORM 7 (driver PostgreSQL, pg) e AWS SDK v3 estão fixados no manifest/lockfile.
 
-O Docker usa Bun fixado por digest, instalação congelada e estágios separados. Runtime contém `dist/`, dependências de produção e manifest, executando como usuário `bun`; fontes/fixtures/segredos não entram. Testes exercitam decorators, DI, imports, rotas e migrations no JavaScript compilado, inclusive na imagem final. Typecheck sozinho não comprova o runtime.
+O Docker usa Bun fixado por digest, instalação congelada e estágios separados. Runtime contém `dist/`, dependências de produção e manifest, executando como usuário `bun`. Testes exercitam o JavaScript compilado, inclusive na imagem final. Typecheck sozinho não comprova o runtime.
 
 ## D3 — Configuração e lifecycle
 
-Configuração imutável é validada por papel antes de abrir recursos. API/worker rejeitam credenciais migrator; provision não precisa de banco. Endpoint/região/credenciais SQS locais são explícitos, sem provider chain da máquina ou fallback AWS. Configuração inválida retorna código não zero e nomes de variáveis sem valores. Clientes lazy permitem liveness mesmo com dependências indisponíveis.
+Configuração imutável é validada por papel antes de abrir recursos. API/worker rejeitam credenciais migrator; provision não precisa de banco. Endpoint/região/credenciais SQS locais são explícitos. Clientes lazy permitem liveness mesmo com dependências indisponíveis.
 
-SIGTERM/SIGINT ativam draining, cancelam probes, param aceite HTTP, aguardam requests e fecham contexto NestJS, pools e clientes. Prazo padrão máximo de 25 s com grace period Compose de 30 s; sucesso retorna 0, erro/timeout retorna 1. O scaffold não possui mensagens em processamento; commit/ack e liberação de visibility serão responsabilidade dos consumers futuros. Shutdown travado e a matriz adversarial permanecem em P1.
+SIGTERM/SIGINT ativam draining, cancelam probes, param aceite HTTP, aguardam requests e fecham contexto NestJS, pools e clientes. Prazo padrão máximo de 25 s com grace period Compose de 30 s; sucesso retorna 0, erro/timeout retorna 1.
 
 ## D4 — Compose e preparação explícita
 
-`postgres` e `localstack` possuem healthchecks de acesso real. Jobs independentes `migrate` e `provision` antecedem API/worker por `service_completed_successfully`. Não existe schema sync, migration ou provisionamento implícito nos processos de aplicação. A mesma imagem suporta três workers sem `container_name` ou portas de worker publicadas.
+`postgres` e `localstack` possuem healthchecks de acesso real. Jobs independentes `migrate` e `provision` antecedem API/worker por `service_completed_successfully`. Não existe schema sync ou provisionamento implícito nos processos de aplicação. Migrations financeiras (F1) criam tabelas `wagering.wallet`, `wagering.wallet_ledger_entry`, `wagering.wager_transaction`, `wagering.inbox_message`, `wagering.outbox_event` com constraints SQL (CHECK de aritmética de ledger, unicidade de efeitos, FKs) e triggers que negam UPDATE/DELETE/TRUNCATE no ledger (append-only imposto no banco). `wagering_app` não executa DDL; histórico de migrations fica em `public`.
 
-Desenvolvimento e testes usam projetos/redes/volumes/databases/portas/filas separados. O harness gera UUIDs e confere ownership antes de limpar; o perfil `foundation` inclui todos os processos nos testes e no cleanup. SIGKILL/falha do daemon pode impedir cleanup; recuperação adversarial de resíduos continua P1 9.1.
+Desenvolvimento e testes usam projetos/redes/volumes/databases/portas/filas separados; o harness gera UUIDs e confere ownership antes de limpar.
 
-PostgreSQL 17.10 tem volume persistente. LocalStack Community 4.14.0, fixado por digest, dispensa ativação nesta versão testada e usa URLs `dynamic`. Não há garantia de durabilidade das mensagens após recriar o emulador, nem promessa de paridade completa com AWS. Atualizar LocalStack exige rever conta/token, persistência e repetir testes. Mais detalhes em [docker/README.md](docker/README.md).
+## D5 — MikroORM, PostgreSQL e concorrência
 
-## D5 — MikroORM, PostgreSQL e migrations
+MikroORM fornece Unit of Work, Identity Map e transações explícitas. A API registra RequestContext por request (ALS); o worker usa `WorkerDatabaseContext.run` com fork/contexto limpo em `finally`. `allowGlobalContext` é falso. O use case controla a transação SQL: `ProcessWagerTransaction` abre transação explícita, aplica `SELECT ... FOR UPDATE` na wallet (pessimistic lock sob READ COMMITTED), valida regras de negócio e grava wallet + transação + ledger + outbox em um único flush (all-or-nothing). Wallets distintas avançam em paralelo; não existe mutex local nem lock global. Erros de transação abortada exigem novo contexto — o use case refaz o caminho em contexto limpo após rollback.
 
-MikroORM fornece Unit of Work, Identity Map e transações explícitas. Cada request HTTP tem RequestContext; cada execução de worker usa `WorkerDatabaseContext.run` com fork/contexto limpo em `finally`. `allowGlobalContext` é falso. Pool padrão máximo 5 por processo, com timeouts configurados; os probes usam conexões dedicadas e curtas, adicionais ao pool, para cancelamento sem atingir operações de aplicação. Dimensionar PostgreSQL para a soma dos processos/probes.
+Decisão de contrato (F1 D6/F6): `Money` é imutável, encapsula decimal exato (`decimal.js`), recebe/serializa strings de escala 2 e persiste em `NUMERIC(20,2)` + moeda; `number`/`parseFloat` nunca tocam o dinheiro. Wallet única por (player, moeda) com saldo não negativo; ledger append-only reconstrói o saldo; unicidade de idempotência (`provider_id, external_transaction_id`) e unicidade de efeitos (outbox/inbox por `eventId`) protegidas por constraints SQL. Referências (`WIN/REFUND/ROLLBACK`) usam estado `PENDING_REFERENCE` quando a referência ainda não existe; F5 tratará expiração/scheduler.
 
-O use case futuro controlará uma única transação, propagando seu EntityManager aos adapters; repositórios não farão commits independentes. `wagering_app` não possui DDL. `wagering_migrator` cria objetos somente pelo runner/job. A migration técnica cria schema vazio `wagering` e permissões; histórico fica em `public`, legível pelo app, sem escrita. Reversão explícita usa `RESTRICT` e preserva histórico. Não existem tabelas financeiras.
+## D6 — Domínio financeiro (F1/F2)
 
-Migrations compiladas têm `up`/`down` e catálogo compartilhado com a readiness. `up → up → down → up`, rollback, contextos isolados, privilégios e decimal exato são testados em PostgreSQL real descartável. Executar um migrator por vez até advisory lock e prova de concorrência em P1 6.1. Migrations financeiras precisarão de testes próprios, constraints e estratégia de preservação de dados.
+- `Wallet` (aggregate root) expõe `open`, `credit`, `debit`; cada movimento gera `LedgerEntry` com `balanceBefore/After` e incrementa `version` somente quando o saldo muda.
+- `WagerTransaction` cobre BET/WIN/LOSS/REFUND/ROLLBACK/OPENING com máquina de estados (`PENDING_REFERENCE` → `PROCESSED`/`REJECTED`); replay idempotente preserva o `result_balance` original.
+- `ProcessWagerTransaction` (F2): idempotência por `(providerId, externalTransactionId)` + hash do payload (replay idêntico é 200; payload divergente é conflito 409), referências obrigatórias para REFUND/ROLLBACK, WIN opcionalmente referenciada, saldo insuficiente rejeitado com `failureCode`, LOSS sem movimentação de dinheiro. Cada transação aplicada emite `WagerTransactionProcessed`; cada movimento de saldo emite `WalletBalanceChanged` — ambos enfileirados na outbox na mesma transação (publicação é F4).
+- Identificadores de negócio (F6.4/F6.5): rejeitam campo vazio, string só de espaços, tamanho acima do limite e `providerId === "internal"` (literal exato, reservado para operações internas como OPENING).
 
-## D6 — Dinheiro e invariantes futuras
+## D7 — API HTTP (F6)
 
-Decisão aprovada, ainda não implementada: Money imutável encapsula decimal exato, recebe/serializa strings de escala 2, persiste em `NUMERIC(20,2)` + moeda e não usa `number`/`parseFloat`. A fixture técnica confirma round-trip de `"900719925474099.91"`; isso não testa Money. PostgreSQL pode arredondar excesso de escala, portanto a futura aplicação deve rejeitar entradas inválidas antes da escrita.
+A API financeira expõe (README §9) os sete endpoints:
 
-Wallet única por player/moeda, saldo não negativo, ledger append-only, unicidade de efeitos e FKs terão proteção SQL e de domínio. Saldo, ledger, transação, inbox e outbox compartilharão commit. Nenhuma publicação antes do commit. Ledger deve reconstruir o saldo em todo cenário financeiro. Factories/rehydrate preservam encapsulamento e terminalidade. Os contratos ainda precisam resolver escala de entrada, zero, referências, reversões e limites conforme as ambiguidades do design.
+| Método/rota | Sucesso | Notas |
+|---|---|---|
+| `POST /wallets` | 201 | criação atômica (wallet + OPENING + outbox); `(playerId, currency)` duplicado → 409 |
+| `GET /wallets/:walletId` | 200 | 404 se desconhecida |
+| `GET /wallets/:walletId/ledger?cursor&limit` | 200 | paginação keyset sobre `(created_at, id)`; cursor opaco base64url; `limit` 1–100 (default 50) |
+| `POST /wagering/transactions` | 200/202 | header `Idempotency-Key` obrigatório (fonte da verdade, fora do body); 409 conflito de payload; 422 regra de negócio (`failureCode`) |
+| `GET /wagering/transactions/:transactionId` | 200 | 404 se desconhecida |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | 200 | 404 se desconhecida |
+| `POST /wallets/:walletId/reconciliation` | 200 | **somente leitura**: compara saldo materializado com a soma exata do ledger em SQL; divergência → log `reconciliation.divergence` (warn) + `consistent=false`; nunca corrige |
 
-## D7 — Concorrência e entrega futuras
+Contrato de erro único (filter global `FinancialExceptionFilter`): corpo `{statusCode, error, code, message, field?}`. Mapeamento: 400 `INVALID_PAYLOAD` (DTO/estrutura/identificador/cursor/limit/`Idempotency-Key` ausente), 404 `NOT_FOUND`, 409 `WALLET_ALREADY_EXISTS`/`IDEMPOTENCY_CONFLICT`, 422 `TRANSACTION_REJECTED`, 202 `PENDING_REFERENCE`, 503 `SERVICE_UNAVAILABLE` (falhas transitórias de conexão/driver), 500 `INTERNAL_ERROR` (corpo genérico; stack/SQL/credenciais nunca chegam ao cliente — log server-side com correlation id). Erros `HttpException` do Nest (status dinâmicos) são repassados pelo filter.
 
-Decisão aprovada: pessimistic row locking por wallet (`SELECT ... FOR UPDATE`) sob `READ COMMITTED`, transações curtas e sem I/O SQS sob lock. Ordem wallet → transação/referência → lançamentos. Wallets distintas avançam em paralelo; não usar mutex local ou lock global. Constraints persistentes arbitram idempotência e reversões; erro que aborta transação exige novo contexto após rollback. `version` é sequência de mudanças de saldo, não substitui locks.
+Replay de submissão preserva o saldo original observado (`idempotentReplay: true`), mesmo após movimentações posteriores à primeira observação.
 
-Inbox deduplica persistente e ack acontece após commit. Outbox terá claim/lease com `FOR UPDATE SKIP LOCKED`, publicação fora da transação e `eventId` estável. At-least-once pode duplicar entrega; FIFO não fornece exactly-once financeiro. Scheduler persistente tratará `PENDING_REFERENCE`, liberando a fila após gravação para não bloquear a chegada da referência. Nada disso está implementado neste P0.
+Autenticação: sem pontuação no README §2; cada controller carrega um `NoopAuthGuard` como ponto de extensão documentado para um provider real (OIDC/JWT de IdP externo ou API key interna). Health permanece público e sem guard.
 
 ## D8 — SQS e topologia
 
-SDK usa endpoint/credenciais locais explícitos, descoberta de QueueUrl/QueueArn, retries limitados e timeout real. Provisionamento cria DLQ antes da principal. Ambas são FIFO, `ContentBasedDeduplication=false`, visibility 60 s, long poll 20 s. Retenções: principal 345600 s, DLQ 1209600 s. Redrive principal aponta ao ARN real da DLQ com limite 5; `RedriveAllowPolicy` é `byQueue` restrita à principal.
-
-Reexecução compatível só lê e preserva mensagens. Drift existente falha com diagnóstico sem delete/recreate; reconciliação mutável é P1 7.1. Na criação, a DLQ fica brevemente com policy padrão até existir o ARN da principal; sucesso exige validar a ligação final antes de iniciar aplicação. Transporte send/receive/delete é testado exclusivamente com payload técnico isolado. Visibility/redelivery/redrive efetivo continuam P1 7.2–7.3.
+SDK usa endpoint/credenciais locais explícitos, descoberta de QueueUrl/QueueArn, retries limitados e timeout real. Provisionamento cria DLQ antes da principal; ambas FIFO com `ContentBasedDeduplication=false`. Reexecução compatível só lê e preserva mensagens. Consumer (F3), publisher (F4) e scheduler (F5) não existem ainda; F6 deliberadamente não publica nem consome mensagens — a outbox permanece não publicada até F4.
 
 ## D9 — Health e logs
 
-Health público separa processo vivo e dependências prontas. Readiness HTTP e `health:worker` compartilham SELECT/histórico/schema e leitura/validação de ambas as filas, em paralelo. Orçamento de I/O 1700 ms dentro de 2 s externos: conexão PostgreSQL dedicada read-only, timeouts SQL/conexão e socket cancelável; SQS de probe usa uma tentativa, AbortSignal e destruição do cliente. Não executar `db:status` como probe, pois é administrativo e pode preparar histórico.
+Health público separa processo vivo e dependências prontas; readiness usa conexões dedicadas e orçamento de I/O. Logs JSON usam allowlist estrita de campos e correlation id validado/gerado; nunca expõem URL, senha, token, payload ou stack. Eventos de domínio financeiro: `http.completed` (com statusCode em falhas 5xx) e `reconciliation.divergence` (warn, com walletId e valores exatos). Métricas/OTel permanecem fora do escopo.
 
-Respostas incluem somente status e checks `postgresql`/`sqs` como `up`/`down`; falha HTTP retorna 503, draining inclui `reason: shutting_down`, worker retorna 1. Sem DDL, publicação, consumo ou ack. Recuperação é reavaliada sem restart. Probe worker não mede progresso de jobs. Logs JSON usam allowlist de campos e correlation ID HTTP validado/gerado; não expõem URL, senha, token ou payload. IDs/métricas financeiras obrigatórios serão adicionados quando os fluxos existirem.
+## D10 — Evidências e testes
 
-## D10 — Evidências e limites do aceite
-
-Bun Test é o único runner. `test:unit` inclui runtime compilado; integração e Docker usam PostgreSQL/LocalStack reais. `test:infra --scope=p0` executa typecheck/build, unidades/runtime, integração e smoke da imagem/Compose em sequência. Testes reais cobrem migrations reversíveis, privilégios, SQL rollback/isolamento, decimal exato, SQS, preparação, health, três workers simultâneos sem consumo e shutdown normal. Fixtures técnicas vivem somente em testes.
-
-Sem filtro, `test:infra` requer também P1 e retorna `incomplete` enquanto suas tarefas/suites faltarem. P0 não comprova o desafio completo. Não executar suites concorrentes compartilhando `dist/`/`.test-dist/`; cleanup dos recursos Docker é isolado e ausência do daemon reprova, sem skips. As falhas injetadas são em recursos próprios, nunca no desenvolvimento.
+Bun Test é o único runner. Camada unitária cobre domínio puro, use cases com EntityManager fake, parsers de DTO, mapeamento de status de submissão e o exception filter. Integração usa PostgreSQL real descartável via `TestInfrastructure` e sobe a aplicação Nest (`createApiApplication`) em porta efêmera, exercitando os endpoints HTTP com `fetch` — inclusive replay idempotente, conflito de payload, `PENDING_REFERENCE`, rejeição 422, paginação do ledger, reconciliação divergente seedada (que permanece inalterada — a rota não escreve) e 503 com `DATABASE_URL` apontando porta fechada. Smoke preserva o 404 de rota inexistente (o filter repassa `HttpException`). Docker/Compose e migrations reversíveis continuam cobertos por testes próprios.
 
 ## Organização dos arquivos
 
 ```text
 src/
   bootstrap/          # api, worker, migrate, provision, health-worker
-  composition/        # raízes NestJS e lifecycle do scaffold worker
+  composition/        # raízes NestJS (ApiModule, WorkerModule)
+  domain/
+    wallet/           # Money, Wallet, LedgerEntry (puro)
+    wagering/         # WagerTransaction, business-identifiers, payload-hash, events, outbox-message (puro)
+  modules/
+    wallet/           # application (open/get/list-ledger/reconcile), http (controller + dto), wallet.module
+    wagering/         # application (process/get-transaction), http (controller + dto), wagering-http.module
   platform/
+    auth/             # noop-auth.guard (ponto de extensão)
     config/           # validação por papel
-    database/         # MikroORM, contextos, catálogo e migrations técnicas
-    messaging/sqs/    # cliente, topologia e provisionamento
+    database/         # MikroORM, entidades, wallet.repository, migrations, contextos
     health/           # checks compartilhados e controllers públicos
+    http/             # exception filter, invalid-payload, path-params
     lifecycle/        # draining e encerramento limitado
-    logging/          # JSON e correlação
+    logging/          # JSON, correlação e allowlist
+    messaging/sqs/    # cliente, topologia e provisionamento
 scripts/              # build e aceite da infraestrutura
-tests/               # unit, smoke do host, integration, docker, fixtures/support
-docker/postgres/     # bootstrap idempotente de database/papéis
-openspec/changes/bootstrap-backend-foundation/
+tests/                # unit, smoke, integration, docker, support
+docker/postgres/      # bootstrap idempotente de database/papéis
+openspec/changes/     # mudanças OpenSpec (F1, F2, F6 e futuras)
 ```
-
-Módulos `wallets/{domain,application,infrastructure,presentation}` e `wagering/{...}` são destino futuro; não foram criados.
 
 ## Pendências e próxima etapa
 
-As 13 tarefas P1 6.1–9.3 permanecem abertas: migrations concorrentes/falhas de DDL, contextos sob falhas concorrentes, drift SQS, visibility/redelivery/redrive, matriz avançada de indisponibilidade/draining/restarts/persistência, cleanup adversarial e aceite completo. O teste P0 com três workers e pausa básica não encerra os cenários adicionais de restart/falha em 8.x.
+F3 (inbox + consumer SQS reutilizando `ProcessWagerTransaction`), F4 (publisher de outbox com claim/lease `FOR UPDATE SKIP LOCKED`), F5 (scheduler de `PENDING_REFERENCE` com expiração) e F7 (consolidação de concorrência/recuperação) permanecem abertos. P1 da fundação (migrations concorrentes, drift SQS, visibility/redrive, matriz adversarial de shutdown, cleanup) segue pendente e antecede fechamento/entrega final.
 
-P0 permite propor F1 `implement-money-wallet-ledger`, sem iniciar sua implementação automaticamente. F2 cobre transações/idempotência/outbox atômica; F3 inbox/consumer; F4 publisher; F5 referências; F6 API/reconciliação; F7 consolidação concorrência/recuperação. Os **19 testes obrigatórios S13-U01–U05, I01–I06, C01–C08 e a invariante G01** estão mapeados para F1–F7 no [design](openspec/changes/bootstrap-backend-foundation/design.md); todos continuam financeiramente pendentes. P1 necessário deve preceder cada aceite financeiro dependente, e todo P1 antecede fechamento/entrega final.
-
-Autenticação permanece fora deste lote. Na futura API financeira, adotar validação OIDC/JWT de IdP externo e ponto `ProviderIdentityPort` na borda de aplicação; não cadastrar usuários/senhas próprios. Não criar uma porta vazia no scaffold. Health continuará público; provider da fila continuará sujeito ao domínio. Métricas financeiras e logs com IDs de negócio são obrigatórios, enquanto dashboard/OTel, double-entry e carga são opcionais fora desta change.
+Autenticação real (OIDC/JWT) entra quando o escopo pontuar; o `NoopAuthGuard` é o swap point. Métricas financeiras/OTel e double-entry permanecem fora do timebox.

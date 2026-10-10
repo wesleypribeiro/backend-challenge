@@ -25,6 +25,7 @@ import {
   toWagerTransactionDomain,
 } from '../../../platform/database/entities/wager-transaction.entity.js';
 import { OutboxEventSchema, toOutboxEventPersistence } from '../../../platform/database/entities/outbox-event.entity.js';
+import { WalletNotFoundError } from '../../wallet/application/errors.js';
 
 export interface ProcessWagerTransactionInput {
   providerId: string;
@@ -113,7 +114,7 @@ export class ProcessWagerTransaction {
       lockMode: LockMode.PESSIMISTIC_WRITE,
     });
     if (!walletRow) {
-      throw new Error(`Wallet ${input.walletId} not found`);
+      throw new WalletNotFoundError(input.walletId);
     }
 
     // Re-lookup after the lock: a concurrent commit may have landed between
