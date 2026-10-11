@@ -43,18 +43,24 @@ test('POST /wallets/:walletId/reconciliation reports consistency for a healthy w
 
 test('a seeded divergence is reported without ever being corrected', async () => {
   const { walletId, playerId } = await seedWallet(origin, '60.00');
-  // Simulate divergence the only way the append-only ledger allows: a
-  // compensating CREDIT entry that the materialized balance never saw. The
-  // ledger row needs a real transaction (deferred FK) that is distinct from
-  // the OPENING transaction (one entry per transaction per wallet).
+  // Deliberate inconsistency — the exact behavior under test. The only way
+  // the append-only ledger allows seeding one is a ledger entry whose
+  // materialized balance effect was never applied: a coherent PROCESSED WIN
+  // (transaction row + CREDIT entry) whose balance update is skipped, so
+  // stored (60.00) diverges from the ledger sum (75.00). The transaction row
+  // is required by the deferred FK and must be distinct from the OPENING
+  // transaction (one entry per transaction per wallet). A REJECTED
+  // transaction would violate the domain contract (rejected transactions
+  // never produce ledger entries); the seed mimics a confirmed movement the
+  // wallet row failed to observe, not a rejected one.
   const seedTransactionId = crypto.randomUUID();
   await infra.query('app',
     `insert into wagering.wager_transaction
        (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
         wallet_id, player_id, round_id, game_id, kind, status,
-        money_amount, money_currency, created_at)
+        money_amount, money_currency, processed_at, result_balance, created_at)
      values ($1, 'acme', $2, $3, repeat('a', 64), $4, $5, 'r-seed', 'g-seed',
-             'WIN', 'REJECTED', '15.00', 'BRL', now())`,
+             'WIN', 'PROCESSED', '15.00', 'BRL', now(), '75.00', now())`,
     [seedTransactionId, `seed-win-${walletId}`, `seed-key-${walletId}`, walletId, playerId]);
   await infra.query('app',
     `insert into wagering.wallet_ledger_entry

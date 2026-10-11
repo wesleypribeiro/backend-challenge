@@ -41,9 +41,9 @@ test('an uncommitted wallet mutation is invisible to reconciliation; after commi
       `insert into wagering.wager_transaction
          (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
           wallet_id, player_id, round_id, game_id, kind, status,
-          money_amount, money_currency, created_at)
+          money_amount, money_currency, processed_at, result_balance, created_at)
        values ($1, 'acme', $2, $3, repeat('a', 64), $4, $5, 'r-snap', 'g-snap',
-               'WIN', 'REJECTED', '15.00', 'BRL', now())`,
+               'WIN', 'PROCESSED', '15.00', 'BRL', now(), '115.00', now())`,
       [transactionId, `snap-win-${walletId}`, `snap-key-${walletId}`, walletId, playerId]);
     await holder.query(
       `insert into wagering.wallet_ledger_entry
@@ -99,9 +99,9 @@ test('reconciliation racing a commit observes a consistent snapshot — never a 
       `insert into wagering.wager_transaction
          (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
           wallet_id, player_id, round_id, game_id, kind, status,
-          money_amount, money_currency, created_at)
+          money_amount, money_currency, processed_at, result_balance, created_at)
        values ($1, 'acme', $2, $3, repeat('b', 64), $4, $5, 'r-race', 'g-race',
-               'WIN', 'REJECTED', '10.00', 'BRL', now())`,
+               'WIN', 'PROCESSED', '10.00', 'BRL', now(), '60.00', now())`,
       [transactionId, `race-win-${walletId}`, `race-key-${walletId}`, walletId, playerId]);
     await holder.query(
       `insert into wagering.wallet_ledger_entry
