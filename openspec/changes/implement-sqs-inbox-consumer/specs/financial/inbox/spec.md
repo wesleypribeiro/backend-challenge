@@ -6,19 +6,19 @@ Defines the persistent inbox used by the SQS consumer: message identity per cons
 ## ADDED Requirements
 
 ### Requirement: Inbox Persistence
-The system MUST persist received messages in `wagering.inbox_message` with `messageId`, `consumerName`, `payloadHash`, `receivedAt` and `processedAt`, and MUST enforce uniqueness of `(consumerName, messageId)` with a database constraint — never with in-memory state. Protection MUST hold across independent processes and process restarts.
+The system MUST persist received messages in `wagering.inbox_message` with `messageId`, `consumerName`, `payloadHash`, `receivedAt` and a nullable `processedAt`, and MUST enforce uniqueness of `(consumerName, messageId)` with a named database constraint (`inbox_message_consumer_message_unique`) — never with in-memory state. Protection MUST hold across independent processes and process restarts. The insert MUST occur (with an explicit flush) before any wallet lock is taken, and `processedAt` MUST be flipped (UPDATE) in the same transaction before commit, so every committed row has `processedAt` set and the application role holds `SELECT, INSERT, UPDATE` (no `DELETE`).
 
 #### Scenario: Message recorded atomically with its effects
 - **WHEN** a valid message is processed successfully
-- **THEN** the inbox row, the transaction/ledger/wallet effects and the outbox events become visible in the same commit
+- **THEN** the inbox row (with `processedAt` set), the transaction/ledger/wallet effects and the outbox events become visible in the same commit
 
 #### Scenario: Uniqueness enforced by the database
 - **WHEN** two concurrent deliveries of the same `(consumerName, messageId)` race on the inbox insert
-- **THEN** the database serializes them on the unique constraint; the loser's whole transaction rolls back and no financial effect is duplicated
+- **THEN** the database serializes them on `inbox_message_consumer_message_unique`; the loser's whole transaction rolls back and no financial effect is duplicated
 
 #### Scenario: No partial inbox record after failure
-- **WHEN** processing fails after the inbox insert but before commit
-- **THEN** no inbox row is visible and the message is eligible for redelivery
+- **WHEN** processing fails after the inbox insert (with `processedAt` still NULL, uncommitted) but before the flip/commit
+- **THEN** the uncommitted row is invisible under MVCC, no inbox row is visible after the rollback, and the message is eligible for redelivery
 
 ### Requirement: Duplicate and Identity-Conflict Recognition
 A message MUST be recognized as already processed when an inbox row for `(consumerName, messageId)` exists with a matching payload hash; the consumer MUST acknowledge it without reprocessing. When the same identity exists with a divergent payload hash, the system MUST treat it as a permanent identity conflict: no financial effect, no acknowledgment, and the message MUST eventually reach the DLQ through the queue's redrive policy. A message still being processed by another worker MUST NOT be visible as processed; the competing insert resolves by commit or rollback of the in-flight transaction.

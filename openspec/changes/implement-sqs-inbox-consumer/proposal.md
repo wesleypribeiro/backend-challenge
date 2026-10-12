@@ -6,11 +6,11 @@ As fundações estão prontas: F1/F2 movem dinheiro com idempotência persistent
 
 ## What Changes
 
-- Nova tabela `wagering.inbox_message` (migration incremental + `EntitySchema` + grants mínimos) com `UNIQUE (consumer_name, message_id)`, `payload_hash`, `received_at` e `processed_at`; domínio `InboxMessage` conforme README §6.5.
+- Nova tabela `wagering.inbox_message` (migration incremental `Migration20261009000400` + registro em `migration-catalog.ts` **e** `migration-options.ts` (`migrationsList`) + `EntitySchema` + grants mínimos) com `UNIQUE (consumer_name, message_id)` nomeada `inbox_message_consumer_message_unique`, `payload_hash`, `received_at NOT NULL` e `processed_at` **nullable** (UPDATE do flip na mesma transação; `GRANT SELECT, INSERT, UPDATE` para `wagering_app`); domínio `InboxMessage` conforme README §6.5.
 - Seam cirúrgico em `ProcessWagerTransaction`: novo método `executeInTransaction(tx, input)` que executa validação + processamento **dentro de uma transação SQL controlada pelo chamador**, sem abrir transação própria e sem o recovery via `em.fork()` (propaga `23505` ao chamador). O caminho HTTP `execute()` permanece byte-comportamental idêntico.
 - Consumidor SQS no worker: loop de long polling com concorrência limitada por instância, validação estrutural do envelope (`WagerTransactionRequested`), transação única (inbox insert + regras financeiras + ledger + outbox + inbox `processed_at`), ack (`DeleteMessage`) somente após commit, política de erros (negócio → terminal+ack; transitório → sem ack/redelivery; permanente → sem ack/redrive à DLQ), detecção de duplicata e conflito de identidade via índice único.
-- Shutdown gracioso integrado a `installShutdown`/`Readiness`: parar de receber, drenar processamentos em andamento dentro do prazo, nunca confirmar transação SQL não concluída.
-- Observabilidade F3: eventos estruturados (`message.received/processed/duplicate/rejected/failed/identity_conflict/shutdown` etc.) com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `receiveCount` — sem payloads completos nem credenciais. Métricas agregadas ficam para etapa futura.
+- Shutdown gracioso integrado a `installShutdown`/`Readiness` com ordem de encerramento explícita (módulo raiz destruído antes dos imports no Nest 12): parar de receber, drenar processamentos em andamento **antes** da destruição do SQS client e do pool PG, nunca confirmar transação SQL não concluída.
+- Observabilidade F3: eventos estruturados (`message.received/processed/duplicate/rejected/failed/identity_conflict/shutdown` etc.) com `messageId` (formato do produtor, não-UUID, ≤200), `transactionId`, `walletId`, `providerId`, `receiveCount` e `correlationId` (`idempotencyKey` se casar com `correlationIdPattern` do ALS, senão UUID — precedente de `http-logging.ts`) — sem payloads completos nem credenciais. Métricas agregadas ficam para etapa futura.
 - Configuração do worker: `CONSUMER_CONCURRENCY` (default 1). Nenhuma dependência npm nova.
 
 ## Capabilities
@@ -24,7 +24,7 @@ As fundações estão prontas: F1/F2 movem dinheiro com idempotência persistent
 
 ## Impact
 
-- Código: novo domínio `src/domain/wagering/inbox-message.ts`, novo schema/migration `inbox_message` (+ catalogo), seam aditivo em `src/modules/wagering/application/process-wager-transaction.ts`, novo consumidor sob `src/modules/wagering/consumer/` (+ wiring no `WorkerModule`), extensão do allowlist do `JsonLogger`, `CONSUMER_CONCURRENCY` na config do worker.
+- Código: novo domínio `src/domain/wagering/inbox-message.ts`, novo schema/migration `inbox_message` (catalogo **e** `migration-options.ts`/`migrationsList`), seam aditivo em `src/modules/wagering/application/process-wager-transaction.ts`, novo consumidor sob `src/modules/wagering/consumer/` (+ wiring no `WorkerModule`), extensão do allowlist do `JsonLogger`, `CONSUMER_CONCURRENCY` na config do worker.
 - Testes: unitários (domínio Inbox, parser do envelope, classificação de erro/decisão de ack) e integração real (PostgreSQL + LocalStack): happy path, duplicatas, mesmo negócio com MessageIds distintos, payload inválido → DLQ, contenção de saldo 80/80 vs 100 via SQS, mesmas/distintas wallets, 3 instâncias, falha antes do commit, commit-antes-do-ack, redelivery, shutdown em processamento, consistência final (wallet == ledger). Nenhum teste existente enfraquecido.
 - Dependências F3/F4/F5/P1: F3 **não depende** de F4 (outbox permanece `PENDING` — o consumidor apenas grava eventos) nem de F5 (`PENDING_REFERENCE` é terminal para a mensagem; scheduler resolve depois). Ordem recomendada: F3 → F4 → F5. P1 permanece paralelo/pendente.
 - Nenhum commit, nenhum push; mudança de planejamento apenas nesta etapa.

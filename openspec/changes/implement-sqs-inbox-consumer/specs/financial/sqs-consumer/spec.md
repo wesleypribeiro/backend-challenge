@@ -6,7 +6,7 @@ Defines the AWS SQS consumer running in the worker: message envelope validation,
 ## ADDED Requirements
 
 ### Requirement: Envelope Validation
-The consumer MUST accept only messages whose envelope is a JSON object with `messageId`, `type` equal to `WagerTransactionRequested`, an ISO-8601 `occurredAt`, and a `data` payload structurally equivalent to the HTTP submission body (including `idempotencyKey`), validated before any SQL transaction opens. Structurally invalid messages MUST produce no writes and MUST NOT be acknowledged, routing to the DLQ through the retry policy.
+The consumer MUST accept only messages whose envelope is a JSON object with a non-empty `messageId` (producer format, not necessarily a UUID, trimmed of edge whitespace, at most 200 characters), `type` equal to `WagerTransactionRequested`, an ISO-8601 `occurredAt`, and a `data` payload structurally equivalent to the HTTP submission body (including `idempotencyKey`), validated before any SQL transaction opens. Structurally invalid messages MUST produce no writes and MUST NOT be acknowledged, routing to the DLQ through the retry policy.
 
 #### Scenario: Valid envelope is processed through the shared use case
 - **WHEN** a well-formed `WagerTransactionRequested` message arrives
@@ -17,7 +17,7 @@ The consumer MUST accept only messages whose envelope is a JSON object with `mes
 - **THEN** nothing is written, the message is not acknowledged, and it reaches the DLQ after the retry policy is exhausted
 
 ### Requirement: Atomic Processing and Post-Commit Acknowledgment
-Inbox record, financial processing, wallet update, ledger entry and outbox events MUST participate in a single SQL transaction. The consumer MUST acknowledge (delete) the message only after that transaction commits. A failure at any point MUST roll back everything and MUST NOT acknowledge.
+Inbox record, financial processing, wallet update, ledger entry and outbox events MUST participate in a single SQL transaction: the inbox insert (with `processedAt` NULL) MUST be flushed before any wallet lock, and the `processedAt` flip MUST occur before commit. The consumer MUST acknowledge (delete) the message only after that transaction commits. A failure at any point (including an idempotency `conflict` outcome) MUST roll back the whole transaction — the inbox insert included — BEFORE any commit or acknowledgment, and MUST NOT acknowledge.
 
 #### Scenario: Ack only after commit
 - **WHEN** a message is processed successfully
@@ -32,7 +32,7 @@ Inbox record, financial processing, wallet update, ledger entry and outbox event
 - **THEN** redelivery is recognized as a duplicate via the inbox and acknowledged without duplicating credits, debits, ledger entries or events
 
 ### Requirement: Retry and Dead-Letter Policy
-Transient errors (database or SQS unavailability, timeouts) MUST NOT acknowledge the message; redelivery after the visibility timeout is the retry mechanism. Permanent errors (identity conflict, idempotency conflict, structurally invalid payload, unknown wallet) MUST NOT acknowledge and MUST route to the DLQ via the queue's redrive policy (`maxReceiveCount`), without silent loss. Business rejections (for example `INSUFFICIENT_FUNDS`) and pending references MUST be persisted by the use case and acknowledged as terminal. SQS FIFO deduplication MUST NOT be relied upon for correctness.
+Transient errors (database or SQS unavailability, timeouts) MUST NOT acknowledge the message; redelivery after the visibility timeout (60s, the retry backoff — no additional backoff configuration) is the retry mechanism. Permanent errors (identity conflict, idempotency conflict, structurally invalid payload, unknown wallet) MUST NOT acknowledge and MUST route to the DLQ via the queue's redrive policy (`maxReceiveCount=5`), without silent loss; the consumer MUST never send messages to the DLQ itself. Unique-constraint violations MUST be classified by constraint name: `inbox_message_consumer_message_unique` is recognized as a duplicate (acknowledged after reading the committed row in a fresh transactional context), while the financial constraints (`wager_transaction_idempotency_key_unique`, `wager_transaction_provider_external_unique`, `wager_transaction_reversal_unique`) trigger a bounded in-process retry (at most 2) of the whole case. Business rejections (for example `INSUFFICIENT_FUNDS`) and pending references MUST be persisted by the use case and acknowledged as terminal. SQS FIFO deduplication MUST NOT be relied upon for correctness.
 
 #### Scenario: Transient failure retries safely
 - **WHEN** a transient error occurs during processing
@@ -58,7 +58,7 @@ The consumer MUST receive with long polling and process messages with bounded pe
 - **THEN** they are processed in parallel without blocking each other
 
 ### Requirement: Graceful Shutdown
-On SIGTERM/SIGINT the worker MUST stop receiving new messages, allow in-flight processing to finish within the configured shutdown deadline, and MUST NOT acknowledge messages whose SQL transaction did not complete. Resources MUST close without partially confirmed financial operations.
+On SIGTERM/SIGINT the worker MUST stop receiving new messages, abort in-flight long polls, and allow in-flight processing to finish within the configured shutdown deadline — completing outstanding acknowledgments while the SQS client and the database pool are still alive — and MUST NOT acknowledge messages whose SQL transaction did not complete. Consumer drain MUST complete before the SQS client and the PostgreSQL pool are destroyed. Resources MUST close without partially confirmed financial operations.
 
 #### Scenario: Shutdown during processing
 - **WHEN** a shutdown signal arrives while a message is being processed
@@ -69,7 +69,7 @@ On SIGTERM/SIGINT the worker MUST stop receiving new messages, allow in-flight p
 - **THEN** the message is not acknowledged and is redelivered to a live consumer
 
 ### Requirement: Consumer Observability
-The consumer MUST emit structured log events including `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` and the receive count, covering receipt, success, duplicates, identity conflicts, business rejections, transient failures, permanent failures and shutdown. Credentials, complete financial payloads and sensitive data MUST NOT be logged. Aggregated metrics are out of scope for this capability and are deferred to a future change.
+The consumer MUST emit structured log events including `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` and the receive count, covering receipt, success, duplicates, identity conflicts, business rejections, transient failures, permanent failures and shutdown. `messageId` MUST be accepted in the producer's format (not necessarily a UUID) and logged as received; `correlationId` MUST be the message's `idempotencyKey` when it matches the correlation-id pattern (at most 128 safe characters) and a generated UUID otherwise, preserving traceability through the message, transaction and wallet identifiers. Credentials, complete financial payloads and sensitive data MUST NOT be logged. Aggregated metrics are out of scope for this capability and are deferred to a future change.
 
 #### Scenario: Processed message is fully traceable
 - **WHEN** a message is processed
