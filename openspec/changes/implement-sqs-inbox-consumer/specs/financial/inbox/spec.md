@@ -6,7 +6,7 @@ Defines the persistent inbox used by the SQS consumer: message identity per cons
 ## ADDED Requirements
 
 ### Requirement: Inbox Persistence
-The system MUST persist received messages in `wagering.inbox_message` with `messageId`, `consumerName`, `payloadHash`, `receivedAt` and a nullable `processedAt`, and MUST enforce uniqueness of `(consumerName, messageId)` with a named database constraint (`inbox_message_consumer_message_unique`) — never with in-memory state. Protection MUST hold across independent processes and process restarts. The insert MUST occur (with an explicit flush) before any wallet lock is taken, and `processedAt` MUST be flipped (UPDATE) in the same transaction before commit, so every committed row has `processedAt` set and the application role holds `SELECT, INSERT, UPDATE` (no `DELETE`).
+The system MUST persist received messages in `wagering.inbox_message` with `messageId`, `consumerName`, `payloadHash`, `receivedAt` and a nullable `processedAt`, and MUST enforce uniqueness of `(consumerName, messageId)` with a named database constraint (`inbox_message_consumer_message_unique`) — never with in-memory state. Protection MUST hold across independent processes and process restarts. The insert MUST occur (with an explicit flush) before any wallet lock is taken, and `processedAt` MUST be flipped (UPDATE) in the same transaction before commit, so every committed row has `processedAt` set and the application role holds `SELECT`, `INSERT` and column-level `UPDATE` on `processedAt` only (least privilege — identity and content columns are immutable through the application; no `DELETE`).
 
 #### Scenario: Message recorded atomically with its effects
 - **WHEN** a valid message is processed successfully

@@ -65,7 +65,7 @@ test('public HTTP and worker checks reflect preparation, recover without restart
     await check({ postgresql: 'up', sqs: 'up' });
     expect((await infra.query('app', 'SELECT * FROM public.mikro_orm_migrations ORDER BY id')).rows).toEqual(history);
     expect((await infra.query('app', "SELECT tablename FROM pg_tables WHERE schemaname='wagering' ORDER BY tablename COLLATE \"C\"")).rows)
-      .toEqual([{ tablename: 'outbox_event' }, { tablename: 'wager_transaction' }, { tablename: 'wallet' }, { tablename: 'wallet_ledger_entry' }]);
+      .toEqual([{ tablename: 'inbox_message' }, { tablename: 'outbox_event' }, { tablename: 'wager_transaction' }, { tablename: 'wallet' }, { tablename: 'wallet_ledger_entry' }]);
     const message = await receiveTechnicalMessage(infra.sqs, QueueUrl!);
     expect(message.MessageId).toBe(sent.MessageId);
     expect(message.Body).toBe('technical-health-preservation');

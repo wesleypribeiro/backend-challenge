@@ -59,9 +59,10 @@ test('compiled Compose foundation gates startup, scales three workers, probes an
       { name: 'Migration20261009000100' },
       { name: 'Migration20261009000200' },
       { name: 'Migration20261009000300' },
+      { name: 'Migration20261009000400' },
     ]);
     expect((await infra.query('app', "SELECT tablename FROM pg_tables WHERE schemaname='wagering' ORDER BY tablename COLLATE \"C\"")).rows)
-      .toEqual([{ tablename: 'outbox_event' }, { tablename: 'wager_transaction' }, { tablename: 'wallet' }, { tablename: 'wallet_ledger_entry' }]);
+      .toEqual([{ tablename: 'inbox_message' }, { tablename: 'outbox_event' }, { tablename: 'wager_transaction' }, { tablename: 'wallet' }, { tablename: 'wallet_ledger_entry' }]);
     const { QueueUrl } = await infra.sqs.send(new GetQueueUrlCommand({ QueueName: infra.queueName }));
     const sent = await infra.sqs.send(new SendMessageCommand({
       QueueUrl: QueueUrl!, MessageBody: 'technical-scaffold-does-not-consume',
