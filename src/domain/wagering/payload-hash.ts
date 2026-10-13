@@ -36,8 +36,10 @@ export function computePayloadHash(fields: WagerPayloadBusinessFields): string {
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 
-/** Recursively sorts object keys so field insertion order cannot change the hash. */
-function canonicalize(value: unknown): string {
+/** Recursively sorts object keys so field insertion order cannot change the
+ * hash. Exported for reuse by `computeInboxPayloadHash` (F3) — the same
+ * canonical JSON algorithm with no behavioral change to the financial hash. */
+export function canonicalize(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }
