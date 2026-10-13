@@ -32,7 +32,7 @@ test('receive creates a message with the informed identity', () => {
   expect(message.messageId).toBe('msg-123');
   expect(message.consumerName).toBe('wager-transaction-consumer');
   expect(message.payloadHash).toBe(computeInboxPayloadHash(validData));
-  expect(message.receivedAt).toBe(receivedAt);
+  expect(message.receivedAt).toEqual(receivedAt);
 });
 
 test('a freshly received message is not processed', () => {
@@ -44,7 +44,7 @@ test('a freshly received message is not processed', () => {
 test('markProcessed records the processing timestamp', () => {
   const message = InboxMessage.receive(receiveProps);
   message.markProcessed(processedAt);
-  expect(message.processedAt).toBe(processedAt);
+  expect(message.processedAt).toEqual(processedAt);
 });
 
 test('isProcessed flips only after markProcessed', () => {
@@ -60,7 +60,7 @@ test('markProcessed cannot run twice', () => {
   expect(() => message.markProcessed(new Date('2026-10-11T12:00:02.000Z'))).toThrow(
     InvalidInboxStateError,
   );
-  expect(message.processedAt).toBe(processedAt);
+  expect(message.processedAt).toEqual(processedAt);
 });
 
 test('rehydrate reconstructs a processed message without re-running transitions', () => {
@@ -70,11 +70,11 @@ test('rehydrate reconstructs a processed message without re-running transitions'
     processedAt,
   });
   expect(message.isProcessed()).toBe(true);
-  expect(message.processedAt).toBe(processedAt);
+  expect(message.processedAt).toEqual(processedAt);
   expect(message.messageId).toBe('msg-123');
   expect(message.consumerName).toBe('wager-transaction-consumer');
   expect(message.payloadHash).toBe(receiveProps.payloadHash);
-  expect(message.receivedAt).toBe(receivedAt);
+  expect(message.receivedAt).toEqual(receivedAt);
 });
 
 test('rehydrate reconstructs a still-pending message', () => {
@@ -100,7 +100,7 @@ test('identity properties survive receive and rehydrate', () => {
     expect(m.messageId).toBe(receiveProps.messageId);
     expect(m.consumerName).toBe(receiveProps.consumerName);
     expect(m.payloadHash).toBe(receiveProps.payloadHash);
-    expect(m.receivedAt).toBe(receivedAt);
+    expect(m.receivedAt).toEqual(receivedAt);
   }
 });
 
@@ -110,7 +110,7 @@ test('identity survives markProcessed', () => {
   expect(message.messageId).toBe(receiveProps.messageId);
   expect(message.consumerName).toBe(receiveProps.consumerName);
   expect(message.payloadHash).toBe(receiveProps.payloadHash);
-  expect(message.receivedAt).toBe(receivedAt);
+  expect(message.receivedAt).toEqual(receivedAt);
 });
 
 test('inbox hash is deterministic across key insertion order', () => {
@@ -267,4 +267,130 @@ test('computeInboxPayloadHash rejects non-object data', () => {
   expect(() => computeInboxPayloadHash('str' as unknown as Record<string, unknown>)).toThrow(
     InvalidInboxStateError,
   );
+});
+
+test('mutating the receivedAt Date passed to receive does not change internal state', () => {
+  const original = new Date('2026-10-11T12:00:00.000Z');
+  const message = InboxMessage.receive({ ...receiveProps, receivedAt: original });
+  original.setTime(0);
+  expect(message.receivedAt.toISOString()).toBe('2026-10-11T12:00:00.000Z');
+});
+
+test('mutating the Date returned by the receivedAt getter does not change internal state', () => {
+  const message = InboxMessage.receive(receiveProps);
+  const first = message.receivedAt;
+  first.setTime(0);
+  expect(message.receivedAt.toISOString()).toBe('2026-10-11T12:00:00.000Z');
+  expect(message.receivedAt).not.toBe(first);
+});
+
+test('mutating the Date passed to markProcessed does not change internal state', () => {
+  const message = InboxMessage.receive(receiveProps);
+  const at = new Date('2026-10-11T12:00:01.000Z');
+  message.markProcessed(at);
+  at.setTime(0);
+  expect(message.processedAt?.toISOString()).toBe('2026-10-11T12:00:01.000Z');
+});
+
+test('mutating the Date returned by the processedAt getter does not change internal state', () => {
+  const message = InboxMessage.receive(receiveProps);
+  message.markProcessed(processedAt);
+  const returned = message.processedAt;
+  returned?.setTime(0);
+  expect(message.processedAt?.toISOString()).toBe('2026-10-11T12:00:01.000Z');
+  expect(message.processedAt).not.toBe(returned);
+});
+
+test('mutating the Dates of the state passed to rehydrate does not change internal state', () => {
+  const stateReceivedAt = new Date('2026-10-11T12:00:00.000Z');
+  const stateProcessedAt = new Date('2026-10-11T12:00:01.000Z');
+  const message = InboxMessage.rehydrate({
+    messageId: 'msg-123',
+    consumerName: 'wager-transaction-consumer',
+    payloadHash: receiveProps.payloadHash,
+    receivedAt: stateReceivedAt,
+    processedAt: stateProcessedAt,
+  });
+  stateReceivedAt.setTime(0);
+  stateProcessedAt.setTime(0);
+  expect(message.receivedAt.toISOString()).toBe('2026-10-11T12:00:00.000Z');
+  expect(message.processedAt?.toISOString()).toBe('2026-10-11T12:00:01.000Z');
+});
+
+test('a message exposes fresh Date copies on every access', () => {
+  const message = InboxMessage.receive(receiveProps);
+  message.markProcessed(processedAt);
+  expect(message.receivedAt).not.toBe(message.receivedAt);
+  expect(message.processedAt).not.toBe(message.processedAt);
+});
+
+test('computeInboxPayloadHash rejects a Date value', () => {
+  expect(() => computeInboxPayloadHash({ occurredAt: new Date() })).toThrow(
+    InvalidInboxStateError,
+  );
+  expect(() => computeInboxPayloadHash({ nested: { at: new Date() } })).toThrow(
+    InvalidInboxStateError,
+  );
+  expect(() => computeInboxPayloadHash({ list: [new Date()] })).toThrow(InvalidInboxStateError);
+});
+
+test('computeInboxPayloadHash rejects undefined values', () => {
+  expect(() => computeInboxPayloadHash({ missing: undefined })).toThrow(InvalidInboxStateError);
+  expect(() => computeInboxPayloadHash({ nested: { missing: undefined } })).toThrow(
+    InvalidInboxStateError,
+  );
+  expect(() => computeInboxPayloadHash({ list: [undefined] })).toThrow(InvalidInboxStateError);
+});
+
+test('computeInboxPayloadHash rejects function values', () => {
+  expect(() => computeInboxPayloadHash({ fn: () => 'x' })).toThrow(InvalidInboxStateError);
+  expect(() => computeInboxPayloadHash({ list: [function noop() {}] })).toThrow(
+    InvalidInboxStateError,
+  );
+});
+
+test('computeInboxPayloadHash rejects non-finite numbers', () => {
+  expect(() => computeInboxPayloadHash({ amount: Number.NaN })).toThrow(InvalidInboxStateError);
+  expect(() => computeInboxPayloadHash({ amount: Number.POSITIVE_INFINITY })).toThrow(
+    InvalidInboxStateError,
+  );
+  expect(() => computeInboxPayloadHash({ amount: Number.NEGATIVE_INFINITY })).toThrow(
+    InvalidInboxStateError,
+  );
+});
+
+test('computeInboxPayloadHash rejects other non-JSON types', () => {
+  expect(() => computeInboxPayloadHash({ big: 1n })).toThrow(InvalidInboxStateError);
+  expect(() => computeInboxPayloadHash({ sym: Symbol('s') })).toThrow(InvalidInboxStateError);
+  expect(() => computeInboxPayloadHash({ map: new Map() })).toThrow(InvalidInboxStateError);
+  expect(() => computeInboxPayloadHash({ set: new Set() })).toThrow(InvalidInboxStateError);
+  expect(() =>
+    computeInboxPayloadHash({ instance: new (class Point {})() }),
+  ).toThrow(InvalidInboxStateError);
+});
+
+test('computeInboxPayloadHash rejects circular references', () => {
+  const circular: Record<string, unknown> = { top: 'x' };
+  circular.self = circular;
+  expect(() => computeInboxPayloadHash(circular)).toThrow(InvalidInboxStateError);
+});
+
+test('computeInboxPayloadHash rejects sparse array holes', () => {
+  const sparse: unknown[] = [];
+  sparse[1] = 'b';
+  expect(() => computeInboxPayloadHash({ list: sparse })).toThrow(InvalidInboxStateError);
+});
+
+test('computeInboxPayloadHash accepts null, booleans, finite numbers and monetary strings', () => {
+  expect(() =>
+    computeInboxPayloadHash({
+      nil: null,
+      flag: true,
+      count: 3,
+      money: { amount: '25.00', currency: 'BRL' },
+      list: [null, false, 'x', 1.5],
+      nested: {},
+    }),
+  ).not.toThrow();
+  expect(computeInboxPayloadHash({ nil: null })).toMatch(/^[0-9a-f]{64}$/);
 });
